@@ -1,3 +1,4 @@
+[![JOSS](https://joss.theoj.org/papers/10.21105/joss.07873/status.svg)](https://joss.theoj.org/papers/10.21105/joss.07873)
 [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17155189.svg)](https://zenodo.org/doi/10.5281/zenodo.17155189)
 [![PyPI - Version](https://img.shields.io/pypi/v/fluidsf?color=blue)](https://pypi.org/project/fluidsf)
 [![documentation](https://img.shields.io/badge/documentation-stable%20release-blue)](https://cassidymwagner.github.io/fluidsf)
@@ -75,11 +76,9 @@ The best way to communicate about your data needs is to [start a discussion](htt
 We have plans to support many different types of data, especially oceanographic data, but we encourage any users to engage with us so we can make sure we support as many datasets as possible!
 ## Citing
 
-If you use FluidSF in your research or educational activities, we would be grateful if you credit FluidSF by name! 
+If you use FluidSF in your research or educational activities, we would be grateful if you credit FluidSF by name! You can cite our [JOSS publication](https://joss.theoj.org/papers/10.21105/joss.07873), the specific version of FluidSF with [Zenodo](https://zenodo.org/records/10463863) or use the following citation:
 
-You can cite the specific version of FluidSF with [Zenodo](https://zenodo.org/records/10463863) or use the following citations (replacing your version number):
-
-> Wagner, C., Lee, A., & Pearson, B. (2025). FluidSF: A Python package for calculating turbulent flow statistics (v0.2.2). Zenodo. https://doi.org/10.5281/zenodo.10463863
+> Wagner et al., (2025). FluidSF: A Python package for calculating turbulent flow statistics. Journal of Open Source Software, 10(114), 7873, https://doi.org/10.21105/joss.07873
 
 
 ## Contributing/Developing Guidelines
