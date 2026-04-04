@@ -27,6 +27,61 @@ You can also fork/clone this repository to your local machine and install it loc
 
 **List of optional dependencies to run example notebooks**: [matplotlib](https://matplotlib.org), [seaborn](https://seaborn.pydata.org), [h5py](https://www.h5py.org), [scipy](https://scipy.org), [xarray](https://xarray.dev)
 
+For a Conda-based development setup, example execution, notebooks, and tests, see [SETUP.md](SETUP.md).
+
+### Development install in an existing Conda environment
+
+If you already have a Conda environment that you want to use for development, activate it and install FluidSF in editable mode:
+
+    $ source ~/anaconda3/etc/profile.d/conda.sh
+    $ conda activate YOUR_ENV_NAME
+    $ python -m pip install -U pip
+    $ python -m pip install -e '.[examples,test]'
+
+Editable mode means changes you make in this repository are picked up by Python without reinstalling the package after every code change.
+
+### Running the code
+
+After activating your environment, you can import the library from Python:
+
+    $ python
+    >>> import fluidsf
+    >>> print(fluidsf.__version__)
+
+You can also run a quick one-line import test:
+
+    $ python -c "import fluidsf; print(fluidsf.__version__)"
+
+Run one of the example scripts from the repository root:
+
+    $ python examples/python_scripts/ex_1d.py
+    $ python examples/python_scripts/ex_2d.py
+    $ python examples/python_scripts/ex_3d.py
+
+If you want to use the Jupyter notebooks:
+
+    $ jupyter lab
+
+Then open a notebook in `examples/jupyter_notebooks/` and run the cells with `Shift+Enter`.
+
+### Running the tests
+
+From the repository root, after activating your environment, run the full test suite with:
+
+    $ pytest tests/
+
+Run a single test file with:
+
+    $ pytest tests/test_bin_data.py
+
+Run one specific test function with:
+
+    $ pytest tests/test_bin_data.py -k test_bin_data
+
+If `pytest` is not installed in your environment yet, install the development dependencies first:
+
+    $ python -m pip install -e '.[test]'
+
 
 ## Quickstart
 
