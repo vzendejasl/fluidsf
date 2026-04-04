@@ -82,6 +82,22 @@ If `pytest` is not installed in your environment yet, install the development de
 
     $ python -m pip install -e '.[test]'
 
+### Running MPI code
+
+FluidSF now has an opt-in Phase 1 MPI backend for 3D velocity structure functions. It keeps the existing serial API as the default and adds parallel execution when you call:
+
+    $ mpirun -launcher fork -n 4 python -c "import numpy as np, fluidsf; x=np.arange(8,dtype=float); y=np.arange(8,dtype=float); z=np.arange(8,dtype=float); u,v,w=np.meshgrid(x,y,z,indexing='ij'); sf=fluidsf.generate_structure_functions_3d(u,v,w,x,y,z,sf_type=['LL','TT','LLL','LTT'],boundary='periodic-all',backend='mpi',px=2); print(sf['SF_LL_y'] if sf['x-diffs'] is not None else 'worker rank')"
+
+Install the MPI extras first if needed:
+
+    $ python -m pip install -e '.[mpi,test]'
+
+Current Phase 1 MPI limitations:
+
+- it supports 3D velocity structure functions `LL`, `TT`, `LLL`, and `LTT`
+- it currently requires `boundary='periodic-all'` in the public `generate_structure_functions_3d(..., backend='mpi')` path
+- it distributes separation pairs across ranks, so each rank still holds the full field
+
 
 ## Quickstart
 

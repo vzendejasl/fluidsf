@@ -1,0 +1,6 @@
+from fluidsf import generate_sf_grid_3d_mpi
+from fluidsf.generate_sf_grid_3d_mpi import generate_sf_grid_3d_mpi as generate_sf_grid_3d_mpi_module
+
+
+def test_generate_sf_grid_3d_mpi_public_exports():
+    assert generate_sf_grid_3d_mpi is generate_sf_grid_3d_mpi_module

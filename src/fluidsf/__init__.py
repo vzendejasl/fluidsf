@@ -13,6 +13,7 @@ from .calculate_structure_function_1d import calculate_structure_function_1d
 from .calculate_structure_function_2d import calculate_structure_function_2d
 from .calculate_structure_function_3d import calculate_structure_function_3d
 from .generate_sf_maps_2d import generate_sf_maps_2d
+from .generate_sf_grid_3d_mpi import generate_sf_grid_3d_mpi
 from .generate_structure_functions_1d import generate_structure_functions_1d
 from .generate_structure_functions_2d import generate_structure_functions_2d
 from .generate_structure_functions_3d import generate_structure_functions_3d
@@ -25,6 +26,7 @@ __version__ = "0.2.2"
 
 __all__ = (
     "generate_sf_maps_2d",
+    "generate_sf_grid_3d_mpi",
     "generate_structure_functions_1d",
     "generate_structure_functions_2d",
     "generate_structure_functions_3d",

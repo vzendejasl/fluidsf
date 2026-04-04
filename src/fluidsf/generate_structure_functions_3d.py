@@ -6,7 +6,143 @@ from .bin_data import bin_data
 from .calculate_advection_3d import calculate_advection_3d
 from .calculate_separation_distances_3d import calculate_separation_distances_3d
 from .calculate_structure_function_3d import calculate_structure_function_3d
+from .mpi.slab_decomp_3d import (
+    extract_local_z_slab,
+    generate_sf_grid_3d_periodic_z_slab_mpi,
+)
 from .shift_array_1d import shift_array_1d
+
+
+def _requested_structure_functions(sf_type):
+    """Match the legacy substring-based SF selection logic."""
+    return {
+        "ASF_V": any("ASF_V" in t for t in sf_type),
+        "ASF_S": any("ASF_S" in t for t in sf_type),
+        "LL": any("LL" in t for t in sf_type),
+        "TT": any("TT" in t for t in sf_type),
+        "SS": any("SS" in t for t in sf_type),
+        "LLL": any("LLL" in t for t in sf_type),
+        "LTT": any("LTT" in t for t in sf_type),
+        "LSS": any("LSS" in t for t in sf_type),
+    }
+
+
+def _boundary_is_periodic_all(boundary):
+    if boundary is None:
+        return False
+    if isinstance(boundary, str):
+        return "periodic-all" in boundary
+    return any("periodic-all" in entry for entry in boundary)
+
+
+def _generate_structure_functions_3d_mpi_backend(
+    u,
+    v,
+    w,
+    x,
+    y,
+    z,
+    sf_type,
+    scalar,
+    boundary,
+    nbins,
+    px,
+    comm,
+):
+    if comm is None:
+        from mpi4py import MPI
+
+        comm = MPI.COMM_WORLD
+
+    requested = _requested_structure_functions(sf_type)
+    unsupported = [
+        name
+        for name in ("ASF_V", "ASF_S")
+        if requested[name]
+    ]
+    if unsupported:
+        unsupported_text = ", ".join(unsupported)
+        raise ValueError(
+            "The Phase 1 MPI backend for generate_structure_functions_3d "
+            f"does not support: {unsupported_text}."
+        )
+    if (requested["SS"] or requested["LSS"]) and scalar is None:
+        raise ValueError("scalar is required for SS or LSS in the MPI backend.")
+    if not _boundary_is_periodic_all(boundary):
+        raise ValueError(
+            "The Phase 1 MPI backend currently requires boundary='periodic-all'."
+        )
+    if nbins is not None:
+        raise ValueError("The MPI backend does not support nbins yet.")
+
+    grid_sf_type = [name for name in ("LL", "TT", "LLL", "LTT", "SS", "LSS") if requested[name]]
+    if u.shape != v.shape or u.shape != w.shape:
+        raise ValueError("u, v, and w must have identical shapes.")
+    if u.ndim != 3:
+        raise ValueError("u, v, and w must be 3D arrays.")
+
+    size = comm.Get_size()
+    total_x = comm.allreduce(u.shape[0])
+    expects_public_layout = u.shape[1] == len(y) and u.shape[2] == len(z)
+
+    if expects_public_layout and total_x == len(x):
+        # Distributed input: each rank owns a slab in the public x dimension.
+        u_local = np.ascontiguousarray(np.transpose(u, (2, 1, 0)))
+        v_local = np.ascontiguousarray(np.transpose(v, (2, 1, 0)))
+        w_local = np.ascontiguousarray(np.transpose(w, (2, 1, 0)))
+        scalar_local = None
+        if scalar is not None:
+            if scalar.shape != u.shape:
+                raise ValueError("scalar must match u, v, and w for the MPI backend.")
+            scalar_local = np.ascontiguousarray(np.transpose(scalar, (2, 1, 0)))
+    elif u.shape == (len(x), len(y), len(z)):
+        # Replicated input: extract the local slab after converting to the
+        # internal axis order used by the legacy-compatible MPI kernels.
+        u_local = extract_local_z_slab(np.transpose(u, (2, 1, 0)), size, comm.Get_rank())
+        v_local = extract_local_z_slab(np.transpose(v, (2, 1, 0)), size, comm.Get_rank())
+        w_local = extract_local_z_slab(np.transpose(w, (2, 1, 0)), size, comm.Get_rank())
+        scalar_local = None
+        if scalar is not None:
+            if scalar.shape != u.shape:
+                raise ValueError("scalar must match u, v, and w for the MPI backend.")
+            scalar_local = extract_local_z_slab(
+                np.transpose(scalar, (2, 1, 0)), size, comm.Get_rank()
+            )
+    else:
+        raise ValueError(
+            "The MPI backend expects either full arrays shaped (len(x), len(y), len(z)) "
+            "on every rank or distributed x-slabs shaped (local_x, len(y), len(z)) "
+            "whose local_x sizes sum to len(x)."
+        )
+
+    sf_grid = generate_sf_grid_3d_periodic_z_slab_mpi(
+        u_local,
+        v_local,
+        w_local,
+        x,
+        y,
+        z,
+        scalar_local=scalar_local,
+        sf_type=grid_sf_type,
+        comm=comm,
+    )
+
+    output = {
+        "x-diffs": sf_grid["x-diffs"],
+        "y-diffs": sf_grid["y-diffs"],
+        "z-diffs": sf_grid["z-diffs"],
+    }
+    for name in grid_sf_type:
+        grid = sf_grid[f"SF_{name}_grid"]
+        if grid is None:
+            output[f"SF_{name}_x"] = None
+            output[f"SF_{name}_y"] = None
+            output[f"SF_{name}_z"] = None
+            continue
+        output[f"SF_{name}_x"] = grid[:, 0, 0]
+        output[f"SF_{name}_y"] = grid[0, :, 0]
+        output[f"SF_{name}_z"] = grid[0, 0, :]
+    return output
 
 
 def generate_structure_functions_3d(  # noqa: C901, D417
@@ -20,6 +156,9 @@ def generate_structure_functions_3d(  # noqa: C901, D417
     scalar=None,
     boundary="periodic-all",
     nbins=None,
+    backend="serial",
+    px=1,
+    comm=None,
 ):
     """
     Full method for generating structure functions for uniform and even 3D data,
@@ -54,6 +193,16 @@ def generate_structure_functions_3d(  # noqa: C901, D417
         nbins: int, optional
             Number of bins in the structure function. Defaults to None, i.e. does
             not bin the data.
+        backend: str, optional
+            Execution backend. ``"serial"`` preserves the legacy implementation.
+            ``"mpi"`` enables the distributed MPI backend for velocity structure
+            functions with ``boundary="periodic-all"``.
+        px: int, optional
+            Reserved for MPI backend compatibility. The current distributed
+            backend ignores this value.
+        comm: mpi4py.MPI.Comm, optional
+            Optional communicator for the MPI backend. Defaults to
+            ``MPI.COMM_WORLD`` when ``backend="mpi"``.
 
     Returns
     -------
@@ -142,6 +291,24 @@ def generate_structure_functions_3d(  # noqa: C901, D417
                 **z-diffs**: The separation distances in the z direction.
 
     """
+    if backend == "mpi":
+        return _generate_structure_functions_3d_mpi_backend(
+            u,
+            v,
+            w,
+            x,
+            y,
+            z,
+            sf_type,
+            scalar,
+            boundary,
+            nbins,
+            px,
+            comm,
+        )
+    if backend != "serial":
+        raise ValueError("backend must be either 'serial' or 'mpi'.")
+
     # Initialize variables as NoneType
     SF_adv_x = None
     SF_adv_y = None
