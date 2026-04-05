@@ -168,3 +168,28 @@ def test_generate_structure_functions_3d_parameterized(
                 )
         else:
             raise AssertionError(f"Output dict does not contain key '{key}'.")
+
+
+def test_generate_structure_functions_3d_exact_sf_type_selection():
+    x = np.arange(6, dtype=float)
+    y = np.arange(6, dtype=float)
+    z = np.arange(6, dtype=float)
+    u, v, w = np.meshgrid(x, y, z, indexing="ij")
+
+    output = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["LLL"],
+        boundary=None,
+    )
+
+    assert "SF_LLL_x" in output
+    assert "SF_LLL_y" in output
+    assert "SF_LLL_z" in output
+    assert "SF_LL_x" not in output
+    assert "SF_LL_y" not in output
+    assert "SF_LL_z" not in output

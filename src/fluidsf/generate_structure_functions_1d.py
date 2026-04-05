@@ -8,6 +8,109 @@ from .calculate_structure_function_1d import calculate_structure_function_1d
 from .shift_array_1d import shift_array_1d
 
 
+def _generate_structure_functions_1d_mpi_backend(
+    u,
+    x,
+    sf_type,
+    v,
+    y,
+    scalar,
+    dx,
+    boundary,
+    grid_type,
+    nbins,
+    comm,
+):
+    if comm is None:
+        from mpi4py import MPI
+
+        comm = MPI.COMM_WORLD
+
+    if boundary == "Periodic":
+        sep = range(1, int(len(x) / 2))
+    else:
+        sep = range(1, int(len(x) - 1))
+
+    rank = comm.Get_rank()
+    size = comm.Get_size()
+
+    xd = np.zeros(len(sep) + 1)
+    sf_arrays = {}
+    if "LL" in sf_type:
+        sf_arrays["SF_LL"] = np.zeros(len(sep) + 1)
+    if "TT" in sf_type:
+        sf_arrays["SF_TT"] = np.zeros(len(sep) + 1)
+    if "SS" in sf_type:
+        sf_arrays["SF_SS"] = np.zeros(len(sep) + 1)
+    if "LLL" in sf_type:
+        sf_arrays["SF_LLL"] = np.zeros(len(sep) + 1)
+    if "LTT" in sf_type:
+        sf_arrays["SF_LTT"] = np.zeros(len(sep) + 1)
+    if "LSS" in sf_type:
+        sf_arrays["SF_LSS"] = np.zeros(len(sep) + 1)
+
+    for sep_index, sep_id in enumerate(sep, start=1):
+        if (sep_index - 1) % size != rank:
+            continue
+        if boundary == "Periodic":
+            xroll = shift_array_1d(x, shift_by=sep_id, boundary="Periodic")
+            if y is not None:
+                yroll = shift_array_1d(y, shift_by=1, boundary="Periodic")
+        else:
+            xroll = shift_array_1d(x, shift_by=sep_id, boundary=None)
+            if y is not None:
+                yroll = shift_array_1d(y, shift_by=1, boundary=None)
+
+        sf_dict = calculate_structure_function_1d(
+            u,
+            sep_id,
+            sf_type,
+            v,
+            scalar,
+            boundary,
+        )
+
+        for key in sf_arrays:
+            sf_arrays[key][sep_id] = sf_dict[key]
+
+        if y is not None:
+            xd[sep_id], _ = calculate_separation_distances(
+                x[0], y[0], xroll[0], yroll[0], grid_type
+            )
+        else:
+            xd[sep_id], _ = calculate_separation_distances(
+                x[0], None, xroll[0], None, grid_type
+            )
+
+    xd = comm.allreduce(xd)
+    for key in list(sf_arrays):
+        sf_arrays[key] = comm.allreduce(sf_arrays[key])
+
+    if nbins is not None:
+        if "LL" in sf_type:
+            xd_bin, sf_arrays["SF_LL"] = bin_data(xd, sf_arrays["SF_LL"], nbins)
+        if "TT" in sf_type:
+            xd_bin, sf_arrays["SF_TT"] = bin_data(xd, sf_arrays["SF_TT"], nbins)
+        if "SS" in sf_type:
+            xd_bin, sf_arrays["SF_SS"] = bin_data(xd, sf_arrays["SF_SS"], nbins)
+        if "LLL" in sf_type:
+            xd_bin, sf_arrays["SF_LLL"] = bin_data(xd, sf_arrays["SF_LLL"], nbins)
+        if "LTT" in sf_type:
+            xd_bin, sf_arrays["SF_LTT"] = bin_data(xd, sf_arrays["SF_LTT"], nbins)
+        if "LSS" in sf_type and scalar is not None:
+            xd_bin, sf_arrays["SF_LSS"] = bin_data(xd, sf_arrays["SF_LSS"], nbins)
+        xd = xd_bin
+
+    return {
+        key: value
+        for key, value in {
+            **sf_arrays,
+            "x-diffs": xd,
+        }.items()
+        if value is not None
+    }
+
+
 def generate_structure_functions_1d(  # noqa: C901, D417
     u,
     x,
@@ -19,6 +122,8 @@ def generate_structure_functions_1d(  # noqa: C901, D417
     boundary="Periodic",
     grid_type="uniform",
     nbins=None,
+    backend="serial",
+    comm=None,
 ):
     """
     Full method for generating traditional structure functions for 1D data.
@@ -56,6 +161,12 @@ def generate_structure_functions_1d(  # noqa: C901, D417
         nbins: int, optional
             Number of bins for binning the data. Defaults to None, i.e. does not bin
             data.
+        backend: str, optional
+            Execution backend. ``"serial"`` uses the legacy single-process
+            implementation. ``"mpi"`` distributes separation calculations across MPI
+            ranks while expecting the full 1D arrays on every rank.
+        comm: optional
+            MPI communicator used when ``backend="mpi"``.
 
     Returns
     -------
@@ -102,6 +213,22 @@ def generate_structure_functions_1d(  # noqa: C901, D417
     if v is None and ("TT" in sf_type or "LTT" in sf_type):
         raise ValueError(
             "If you include 'TT' or 'LTT' in sf_type, you must provide a v array."
+        )
+    if backend not in ["serial", "mpi"]:
+        raise ValueError("backend must be 'serial' or 'mpi'.")
+    if backend == "mpi":
+        return _generate_structure_functions_1d_mpi_backend(
+            u,
+            x,
+            sf_type,
+            v,
+            y,
+            scalar,
+            dx,
+            boundary,
+            grid_type,
+            nbins,
+            comm,
         )
 
     # Initialize variables as NoneType

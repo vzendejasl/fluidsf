@@ -131,13 +131,209 @@ def test_generate_structure_functions_3d_mpi_backend_matches_serial_for_scalar_s
         np.testing.assert_allclose(parallel[key], serial[key], atol=1e-14)
 
 
+def test_generate_structure_functions_3d_mpi_backend_matches_serial_for_advective_sf():
+    x = np.arange(4, dtype=float)
+    y = np.arange(4, dtype=float)
+    z = np.arange(4, dtype=float)
+    u = np.meshgrid(x, y, z, indexing="ij")[0]
+    v = np.meshgrid(x, y, z, indexing="ij")[1]
+    w = np.meshgrid(x, y, z, indexing="ij")[2]
+    scalar = u + 2.0 * v
+
+    serial = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["ASF_V", "ASF_S"],
+        scalar=scalar,
+        boundary="periodic-all",
+    )
+    parallel = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["ASF_V", "ASF_S"],
+        scalar=scalar,
+        boundary="periodic-all",
+        backend="mpi",
+        comm=_FakeComm(),
+    )
+
+    assert serial.keys() == parallel.keys()
+    for key in serial:
+        np.testing.assert_allclose(parallel[key], serial[key], atol=1e-14)
+
+
+def test_generate_structure_functions_3d_mpi_backend_matches_serial_with_nbins():
+    x = np.arange(8, dtype=float)
+    y = np.arange(8, dtype=float)
+    z = np.arange(8, dtype=float)
+    u = np.meshgrid(x, y, z, indexing="ij")[0]
+    v = np.meshgrid(x, y, z, indexing="ij")[1]
+    w = np.meshgrid(x, y, z, indexing="ij")[2]
+    scalar = u + 2.0 * v
+
+    serial = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["ASF_V", "ASF_S", "LL", "SS", "LLL", "LSS"],
+        scalar=scalar,
+        boundary="periodic-all",
+        nbins=2,
+    )
+    parallel = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["ASF_V", "ASF_S", "LL", "SS", "LLL", "LSS"],
+        scalar=scalar,
+        boundary="periodic-all",
+        nbins=2,
+        backend="mpi",
+        comm=_FakeComm(),
+    )
+
+    assert serial.keys() == parallel.keys()
+    for key in serial:
+        np.testing.assert_allclose(parallel[key], serial[key], atol=1e-14)
+
+
+def test_generate_structure_functions_3d_mpi_backend_matches_serial_nonperiodic():
+    x = np.arange(8, dtype=float)
+    y = np.arange(8, dtype=float)
+    z = np.arange(8, dtype=float)
+    u = np.meshgrid(x, y, z, indexing="ij")[0]
+    v = np.meshgrid(x, y, z, indexing="ij")[1]
+    w = np.meshgrid(x, y, z, indexing="ij")[2]
+    scalar = u + 2.0 * v
+
+    serial = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["ASF_V", "ASF_S", "LL", "TT", "SS", "LLL", "LTT", "LSS"],
+        scalar=scalar,
+        boundary=None,
+        nbins=2,
+    )
+    parallel = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["ASF_V", "ASF_S", "LL", "TT", "SS", "LLL", "LTT", "LSS"],
+        scalar=scalar,
+        boundary=None,
+        nbins=2,
+        backend="mpi",
+        comm=_FakeComm(),
+    )
+
+    assert serial.keys() == parallel.keys()
+    for key in serial:
+        np.testing.assert_allclose(parallel[key], serial[key], atol=1e-14)
+
+
+def test_generate_structure_functions_3d_mpi_backend_matches_serial_mixed_periodic():
+    x = np.arange(8, dtype=float)
+    y = np.arange(8, dtype=float)
+    z = np.arange(8, dtype=float)
+    u = np.meshgrid(x, y, z, indexing="ij")[0]
+    v = np.meshgrid(x, y, z, indexing="ij")[1]
+    w = np.meshgrid(x, y, z, indexing="ij")[2]
+    scalar = u + 2.0 * v
+
+    serial = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["ASF_V", "ASF_S", "LL", "TT", "SS", "LLL", "LTT", "LSS"],
+        scalar=scalar,
+        boundary=["periodic-x", "periodic-y"],
+        nbins=2,
+    )
+    parallel = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["ASF_V", "ASF_S", "LL", "TT", "SS", "LLL", "LTT", "LSS"],
+        scalar=scalar,
+        boundary=["periodic-x", "periodic-y"],
+        nbins=2,
+        backend="mpi",
+        comm=_FakeComm(),
+    )
+
+    assert serial.keys() == parallel.keys()
+    for key in serial:
+        np.testing.assert_allclose(parallel[key], serial[key], atol=1e-14)
+
+
+def test_generate_structure_functions_3d_mpi_backend_exact_sf_type_selection():
+    x = np.arange(6, dtype=float)
+    y = np.arange(6, dtype=float)
+    z = np.arange(6, dtype=float)
+    u, v, w = np.meshgrid(x, y, z, indexing="ij")
+
+    serial = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["LLL"],
+        boundary="periodic-all",
+    )
+    parallel = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["LLL"],
+        boundary="periodic-all",
+        backend="mpi",
+        comm=_FakeComm(),
+    )
+
+    assert "SF_LLL_x" in serial
+    assert "SF_LLL_x" in parallel
+    assert "SF_LL_x" not in serial
+    assert "SF_LL_x" not in parallel
+
+
 @pytest.mark.parametrize(
     "kwargs, expected_message",
     [
         ({"sf_type": ["SS"], "scalar": None}, "scalar is required"),
-        ({"boundary": None, "sf_type": ["LL"]}, "boundary='periodic-all'"),
-        ({"nbins": 2, "sf_type": ["LL"]}, "nbins"),
-        ({"sf_type": ["ASF_V"]}, "does not support: ASF_V"),
+        ({"sf_type": ["ASF_S"], "scalar": None}, "scalar is required"),
+        ({"boundary": "not-a-boundary", "sf_type": ["LL"]}, "supports only boundary=None"),
     ],
 )
 def test_generate_structure_functions_3d_mpi_backend_rejects_unsupported_modes(

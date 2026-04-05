@@ -104,3 +104,30 @@ def test_generate_sf_grid_3d_mpi_periodic_all_matches_wrapped_linear_field():
     assert np.isclose(sf["SF_LLL_grid"][1, 0, 0], -6.0)
     assert np.isclose(sf["SF_LLL_grid"][0, 1, 0], -6.0)
     assert np.isclose(sf["SF_LLL_grid"][0, 0, 1], -6.0)
+
+
+def test_generate_sf_grid_3d_mpi_periodic_all_handles_odd_half_grid_sizes():
+    x = np.arange(12, dtype=float)
+    y = np.arange(10, dtype=float)
+    z = np.arange(8, dtype=float)
+    xx, yy, zz = np.meshgrid(x, y, z, indexing="ij")
+    u = 2.0 * xx + 0.1 * yy
+    v = 3.0 * yy + 0.2 * zz
+    w = 5.0 * zz + 0.3 * xx
+
+    sf = generate_sf_grid_3d_mpi(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["LL"],
+        px=1,
+        boundary="periodic-all",
+        comm=_FakeComm(),
+    )
+
+    # Regression: y shifts were silently left at zero when ny//2 was odd.
+    assert sf["SF_LL_grid"][0, 1, 0] > 0.0
+    assert sf["SF_LL_grid"][0, 3, 2] > 0.0

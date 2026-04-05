@@ -7,23 +7,26 @@ from .calculate_advection_3d import calculate_advection_3d
 from .calculate_separation_distances_3d import calculate_separation_distances_3d
 from .calculate_structure_function_3d import calculate_structure_function_3d
 from .mpi.slab_decomp_3d import (
-    extract_local_z_slab,
-    generate_sf_grid_3d_periodic_z_slab_mpi,
+    calculate_advection_3d_public_x_slab_mpi,
+    compute_directional_sf_3d_public_x_slab_mpi,
+    compute_slab_bounds_1d,
 )
 from .shift_array_1d import shift_array_1d
 
 
 def _requested_structure_functions(sf_type):
-    """Match the legacy substring-based SF selection logic."""
+    """Return the exact 3D SF requests made by the caller."""
+    requested = set(sf_type)
     return {
-        "ASF_V": any("ASF_V" in t for t in sf_type),
-        "ASF_S": any("ASF_S" in t for t in sf_type),
-        "LL": any("LL" in t for t in sf_type),
-        "TT": any("TT" in t for t in sf_type),
-        "SS": any("SS" in t for t in sf_type),
-        "LLL": any("LLL" in t for t in sf_type),
-        "LTT": any("LTT" in t for t in sf_type),
-        "LSS": any("LSS" in t for t in sf_type),
+        "ASF_V": "ASF_V" in requested,
+        "ASF_S": "ASF_S" in requested,
+        "LL": "LL" in requested,
+        "TT": "TT" in requested,
+        "SS": "SS" in requested,
+        "LLL": "LLL" in requested,
+        "LTT": "LTT" in requested,
+        "LSS": "LSS" in requested,
+        "LLLL": "LLLL" in requested,
     }
 
 
@@ -33,6 +36,28 @@ def _boundary_is_periodic_all(boundary):
     if isinstance(boundary, str):
         return "periodic-all" in boundary
     return any("periodic-all" in entry for entry in boundary)
+
+
+def _boundary_entries(boundary):
+    if boundary is None:
+        return ()
+    if isinstance(boundary, str):
+        return (boundary,)
+    return tuple(boundary)
+
+
+def _axis_has_periodic_extent(boundary, axis_name):
+    entries = _boundary_entries(boundary)
+    return ("periodic-all" in entries) or (f"periodic-{axis_name}" in entries)
+
+
+def _axis_uses_periodic_shifts(boundary, axis_name):
+    if boundary is None:
+        return False
+    if isinstance(boundary, str):
+        return "periodic-all" in boundary
+    entries = tuple(boundary)
+    return ("periodic-all" in entries) or (f"periodic-{axis_name}" in entries)
 
 
 def _generate_structure_functions_3d_mpi_backend(
@@ -55,27 +80,17 @@ def _generate_structure_functions_3d_mpi_backend(
         comm = MPI.COMM_WORLD
 
     requested = _requested_structure_functions(sf_type)
-    unsupported = [
-        name
-        for name in ("ASF_V", "ASF_S")
-        if requested[name]
-    ]
-    if unsupported:
-        unsupported_text = ", ".join(unsupported)
-        raise ValueError(
-            "The Phase 1 MPI backend for generate_structure_functions_3d "
-            f"does not support: {unsupported_text}."
-        )
+    if requested["ASF_S"] and scalar is None:
+        raise ValueError("scalar is required for ASF_S in the MPI backend.")
     if (requested["SS"] or requested["LSS"]) and scalar is None:
         raise ValueError("scalar is required for SS or LSS in the MPI backend.")
-    if not _boundary_is_periodic_all(boundary):
+    supported_boundary_entries = {"periodic-all", "periodic-x", "periodic-y", "periodic-z"}
+    unsupported_boundary_entries = set(_boundary_entries(boundary)) - supported_boundary_entries
+    if unsupported_boundary_entries:
         raise ValueError(
-            "The Phase 1 MPI backend currently requires boundary='periodic-all'."
+            "The MPI backend supports only boundary=None and the periodic boundary "
+            "entries: periodic-x, periodic-y, periodic-z, periodic-all."
         )
-    if nbins is not None:
-        raise ValueError("The MPI backend does not support nbins yet.")
-
-    grid_sf_type = [name for name in ("LL", "TT", "LLL", "LTT", "SS", "LSS") if requested[name]]
     if u.shape != v.shape or u.shape != w.shape:
         raise ValueError("u, v, and w must have identical shapes.")
     if u.ndim != 3:
@@ -87,27 +102,25 @@ def _generate_structure_functions_3d_mpi_backend(
 
     if expects_public_layout and total_x == len(x):
         # Distributed input: each rank owns a slab in the public x dimension.
-        u_local = np.ascontiguousarray(np.transpose(u, (2, 1, 0)))
-        v_local = np.ascontiguousarray(np.transpose(v, (2, 1, 0)))
-        w_local = np.ascontiguousarray(np.transpose(w, (2, 1, 0)))
-        scalar_local = None
+        u_public_local = np.ascontiguousarray(u)
+        v_public_local = np.ascontiguousarray(v)
+        w_public_local = np.ascontiguousarray(w)
+        scalar_public_local = None
         if scalar is not None:
             if scalar.shape != u.shape:
                 raise ValueError("scalar must match u, v, and w for the MPI backend.")
-            scalar_local = np.ascontiguousarray(np.transpose(scalar, (2, 1, 0)))
+            scalar_public_local = np.ascontiguousarray(scalar)
     elif u.shape == (len(x), len(y), len(z)):
-        # Replicated input: extract the local slab after converting to the
-        # internal axis order used by the legacy-compatible MPI kernels.
-        u_local = extract_local_z_slab(np.transpose(u, (2, 1, 0)), size, comm.Get_rank())
-        v_local = extract_local_z_slab(np.transpose(v, (2, 1, 0)), size, comm.Get_rank())
-        w_local = extract_local_z_slab(np.transpose(w, (2, 1, 0)), size, comm.Get_rank())
-        scalar_local = None
+        # Replicated input: extract the public-layout slab owned by this rank.
+        start, stop = compute_slab_bounds_1d(len(x), size, comm.Get_rank())
+        u_public_local = np.ascontiguousarray(u[start:stop, :, :])
+        v_public_local = np.ascontiguousarray(v[start:stop, :, :])
+        w_public_local = np.ascontiguousarray(w[start:stop, :, :])
+        scalar_public_local = None
         if scalar is not None:
             if scalar.shape != u.shape:
                 raise ValueError("scalar must match u, v, and w for the MPI backend.")
-            scalar_local = extract_local_z_slab(
-                np.transpose(scalar, (2, 1, 0)), size, comm.Get_rank()
-            )
+            scalar_public_local = np.ascontiguousarray(scalar[start:stop, :, :])
     else:
         raise ValueError(
             "The MPI backend expects either full arrays shaped (len(x), len(y), len(z)) "
@@ -115,33 +128,139 @@ def _generate_structure_functions_3d_mpi_backend(
             "whose local_x sizes sum to len(x)."
         )
 
-    sf_grid = generate_sf_grid_3d_periodic_z_slab_mpi(
-        u_local,
-        v_local,
-        w_local,
-        x,
-        y,
-        z,
-        scalar_local=scalar_local,
-        sf_type=grid_sf_type,
-        comm=comm,
-    )
+    sep_x = range(1, int(len(x) / 2)) if _axis_has_periodic_extent(boundary, "x") else range(1, int(len(x) - 1))
+    sep_y = range(1, int(len(y) / 2)) if _axis_has_periodic_extent(boundary, "y") else range(1, int(len(y) - 1))
+    sep_z = range(1, int(len(z) / 2)) if _axis_has_periodic_extent(boundary, "z") else range(1, int(len(z) - 1))
 
     output = {
-        "x-diffs": sf_grid["x-diffs"],
-        "y-diffs": sf_grid["y-diffs"],
-        "z-diffs": sf_grid["z-diffs"],
+        "x-diffs": np.asarray(x[: len(sep_x) + 1], dtype=np.float64) - float(x[0]),
+        "y-diffs": np.asarray(y[: len(sep_y) + 1], dtype=np.float64) - float(y[0]),
+        "z-diffs": np.asarray(z[: len(sep_z) + 1], dtype=np.float64) - float(z[0]),
     }
-    for name in grid_sf_type:
-        grid = sf_grid[f"SF_{name}_grid"]
-        if grid is None:
-            output[f"SF_{name}_x"] = None
-            output[f"SF_{name}_y"] = None
-            output[f"SF_{name}_z"] = None
-            continue
-        output[f"SF_{name}_x"] = grid[:, 0, 0]
-        output[f"SF_{name}_y"] = grid[0, :, 0]
-        output[f"SF_{name}_z"] = grid[0, 0, :]
+
+    adv_sf_type = tuple(name for name in ("ASF_V", "ASF_S") if requested[name])
+    direct_sf_type = tuple(
+        name
+        for name in ("ASF_V", "ASF_S", "LL", "TT", "SS", "LLL", "LTT", "LSS")
+        if requested[name]
+    )
+    if direct_sf_type:
+        adv_velocity = None
+        adv_scalar = None
+        if requested["ASF_V"]:
+            adv_velocity = calculate_advection_3d_public_x_slab_mpi(
+                u_public_local,
+                v_public_local,
+                w_public_local,
+                x,
+                y,
+                z,
+                comm=comm,
+            )
+        if requested["ASF_S"]:
+            adv_scalar = calculate_advection_3d_public_x_slab_mpi(
+                u_public_local,
+                v_public_local,
+                w_public_local,
+                x,
+                y,
+                z,
+                scalar_local=scalar_public_local,
+                comm=comm,
+            )
+
+        axis_map = (
+            ("x", sep_x),
+            ("y", sep_y),
+            ("z", sep_z),
+        )
+        key_map = {
+            "ASF_V": "SF_advection_velocity",
+            "ASF_S": "SF_advection_scalar",
+            "LL": "SF_LL",
+            "TT": "SF_TT",
+            "SS": "SF_SS",
+            "LLL": "SF_LLL",
+            "LTT": "SF_LTT",
+            "LSS": "SF_LSS",
+        }
+
+        for name in direct_sf_type:
+            for axis_name, sep in axis_map:
+                output[f"{key_map[name]}_{axis_name}"] = np.zeros(len(sep) + 1)
+
+        for axis_name, sep in axis_map:
+            for shift in sep:
+                boundary_mode = (
+                    "periodic-all" if _axis_uses_periodic_shifts(boundary, axis_name) else None
+                )
+                reduced = compute_directional_sf_3d_public_x_slab_mpi(
+                    u_public_local,
+                    v_public_local,
+                    w_public_local,
+                    direction=axis_name,
+                    shift=shift,
+                    sf_type=direct_sf_type,
+                    boundary=boundary_mode,
+                    scalar_local=scalar_public_local,
+                    adv_x_local=None if adv_velocity is None else adv_velocity[0],
+                    adv_y_local=None if adv_velocity is None else adv_velocity[1],
+                    adv_z_local=None if adv_velocity is None else adv_velocity[2],
+                    adv_scalar_local=adv_scalar,
+                    comm=comm,
+                )
+
+                for name in direct_sf_type:
+                    output[f"{key_map[name]}_{axis_name}"][shift] = reduced[key_map[name]]
+
+    if nbins is not None and output["x-diffs"] is not None:
+        if requested["ASF_V"]:
+            xd_bin, output["SF_advection_velocity_x"] = bin_data(
+                output["x-diffs"], output["SF_advection_velocity_x"], nbins
+            )
+            yd_bin, output["SF_advection_velocity_y"] = bin_data(
+                output["y-diffs"], output["SF_advection_velocity_y"], nbins
+            )
+            zd_bin, output["SF_advection_velocity_z"] = bin_data(
+                output["z-diffs"], output["SF_advection_velocity_z"], nbins
+            )
+        if requested["ASF_S"]:
+            xd_bin, output["SF_advection_scalar_x"] = bin_data(
+                output["x-diffs"], output["SF_advection_scalar_x"], nbins
+            )
+            yd_bin, output["SF_advection_scalar_y"] = bin_data(
+                output["y-diffs"], output["SF_advection_scalar_y"], nbins
+            )
+            zd_bin, output["SF_advection_scalar_z"] = bin_data(
+                output["z-diffs"], output["SF_advection_scalar_z"], nbins
+            )
+        if requested["LL"]:
+            xd_bin, output["SF_LL_x"] = bin_data(output["x-diffs"], output["SF_LL_x"], nbins)
+            yd_bin, output["SF_LL_y"] = bin_data(output["y-diffs"], output["SF_LL_y"], nbins)
+            zd_bin, output["SF_LL_z"] = bin_data(output["z-diffs"], output["SF_LL_z"], nbins)
+        if requested["TT"]:
+            xd_bin, output["SF_TT_x"] = bin_data(output["x-diffs"], output["SF_TT_x"], nbins)
+            yd_bin, output["SF_TT_y"] = bin_data(output["y-diffs"], output["SF_TT_y"], nbins)
+            zd_bin, output["SF_TT_z"] = bin_data(output["z-diffs"], output["SF_TT_z"], nbins)
+        if requested["SS"]:
+            xd_bin, output["SF_SS_x"] = bin_data(output["x-diffs"], output["SF_SS_x"], nbins)
+            yd_bin, output["SF_SS_y"] = bin_data(output["y-diffs"], output["SF_SS_y"], nbins)
+            zd_bin, output["SF_SS_z"] = bin_data(output["z-diffs"], output["SF_SS_z"], nbins)
+        if requested["LLL"]:
+            xd_bin, output["SF_LLL_x"] = bin_data(output["x-diffs"], output["SF_LLL_x"], nbins)
+            yd_bin, output["SF_LLL_y"] = bin_data(output["y-diffs"], output["SF_LLL_y"], nbins)
+            zd_bin, output["SF_LLL_z"] = bin_data(output["z-diffs"], output["SF_LLL_z"], nbins)
+        if requested["LTT"]:
+            xd_bin, output["SF_LTT_x"] = bin_data(output["x-diffs"], output["SF_LTT_x"], nbins)
+            yd_bin, output["SF_LTT_y"] = bin_data(output["y-diffs"], output["SF_LTT_y"], nbins)
+            zd_bin, output["SF_LTT_z"] = bin_data(output["z-diffs"], output["SF_LTT_z"], nbins)
+        if requested["LSS"]:
+            xd_bin, output["SF_LSS_x"] = bin_data(output["x-diffs"], output["SF_LSS_x"], nbins)
+            yd_bin, output["SF_LSS_y"] = bin_data(output["y-diffs"], output["SF_LSS_y"], nbins)
+            zd_bin, output["SF_LSS_z"] = bin_data(output["z-diffs"], output["SF_LSS_z"], nbins)
+        output["x-diffs"] = xd_bin
+        output["y-diffs"] = yd_bin
+        output["z-diffs"] = zd_bin
     return output
 
 
@@ -363,44 +482,46 @@ def generate_structure_functions_3d(  # noqa: C901, D417
     zd = np.zeros(len(sep_z) + 1)
 
     # Initialize the structure function arrays
-    if any("ASF_V" in t for t in sf_type):
+    requested = _requested_structure_functions(sf_type)
+
+    if requested["ASF_V"]:
         SF_adv_x = np.zeros(len(sep_x) + 1)
         SF_adv_y = np.zeros(len(sep_y) + 1)
         SF_adv_z = np.zeros(len(sep_z) + 1)
         adv_x, adv_y, adv_z = calculate_advection_3d(u, v, w, x, y, z)
-    if any("ASF_S" in t for t in sf_type):
+    if requested["ASF_S"]:
         SF_x_scalar = np.zeros(len(sep_x) + 1)
         SF_y_scalar = np.zeros(len(sep_y) + 1)
         SF_z_scalar = np.zeros(len(sep_z) + 1)
         adv_scalar = calculate_advection_3d(u, v, w, x, y, z, scalar)
-    if any("LL" in t for t in sf_type):
+    if requested["LL"]:
         SF_x_LL = np.zeros(len(sep_x) + 1)
         SF_y_LL = np.zeros(len(sep_y) + 1)
         SF_z_LL = np.zeros(len(sep_z) + 1)
-    if any("TT" in t for t in sf_type):
+    if requested["TT"]:
         SF_x_TT = np.zeros(len(sep_x) + 1)
         SF_y_TT = np.zeros(len(sep_y) + 1)
         SF_z_TT = np.zeros(len(sep_z) + 1)
-    if any("SS" in t for t in sf_type):
+    if requested["SS"]:
         SF_x_SS = np.zeros(len(sep_x) + 1)
         SF_y_SS = np.zeros(len(sep_y) + 1)
         SF_z_SS = np.zeros(len(sep_z) + 1)
-    if any("LLL" in t for t in sf_type):
+    if requested["LLL"]:
         SF_x_LLL = np.zeros(len(sep_x) + 1)
         SF_y_LLL = np.zeros(len(sep_y) + 1)
         SF_z_LLL = np.zeros(len(sep_z) + 1)
-    if any("LTT" in t for t in sf_type):
+    if requested["LTT"]:
         SF_x_LTT = np.zeros(len(sep_x) + 1)
         SF_y_LTT = np.zeros(len(sep_y) + 1)
         SF_z_LTT = np.zeros(len(sep_z) + 1)
-    if any("LSS" in t for t in sf_type):
+    if requested["LSS"]:
         SF_x_LSS = np.zeros(len(sep_x) + 1)
         SF_y_LSS = np.zeros(len(sep_y) + 1)
         SF_z_LSS = np.zeros(len(sep_z) + 1)
-    if any("LLLL" in t for t in sf_type):
+    if requested["LLLL"]:
         warnings.warn(
-            "Structure functions of order 4 or higher require manual coding. "
-            "LL and LLL will still be computed.",
+            "Structure functions of order 4 or higher are not implemented in "
+            "generate_structure_functions_3d and will be ignored.",
             stacklevel=2,
         )
 
@@ -435,21 +556,21 @@ def generate_structure_functions_3d(  # noqa: C901, D417
             boundary,
         )
 
-        if any("ASF_V" in t for t in sf_type):
+        if requested["ASF_V"]:
             SF_adv_x[x_shift] = SF_dicts["SF_advection_velocity_x"]
-        if any("ASF_S" in t for t in sf_type):
+        if requested["ASF_S"]:
             SF_x_scalar[x_shift] = SF_dicts["SF_advection_scalar_x"]
-        if any("LL" in t for t in sf_type):
+        if requested["LL"]:
             SF_x_LL[x_shift] = SF_dicts["SF_LL_x"]
-        if any("TT" in t for t in sf_type):
+        if requested["TT"]:
             SF_x_TT[x_shift] = SF_dicts["SF_TT_x"]
-        if any("SS" in t for t in sf_type):
+        if requested["SS"]:
             SF_x_SS[x_shift] = SF_dicts["SF_SS_x"]
-        if any("LLL" in t for t in sf_type):
+        if requested["LLL"]:
             SF_x_LLL[x_shift] = SF_dicts["SF_LLL_x"]
-        if any("LTT" in t for t in sf_type):
+        if requested["LTT"]:
             SF_x_LTT[x_shift] = SF_dicts["SF_LTT_x"]
-        if any("LSS" in t for t in sf_type):
+        if requested["LSS"]:
             SF_x_LSS[x_shift] = SF_dicts["SF_LSS_x"]
 
         # Calculate separation distances in x
@@ -487,21 +608,21 @@ def generate_structure_functions_3d(  # noqa: C901, D417
             boundary,
         )
 
-        if any("ASF_V" in t for t in sf_type):
+        if requested["ASF_V"]:
             SF_adv_y[y_shift] = SF_dicts["SF_advection_velocity_y"]
-        if any("ASF_S" in t for t in sf_type):
+        if requested["ASF_S"]:
             SF_y_scalar[y_shift] = SF_dicts["SF_advection_scalar_y"]
-        if any("LL" in t for t in sf_type):
+        if requested["LL"]:
             SF_y_LL[y_shift] = SF_dicts["SF_LL_y"]
-        if any("TT" in t for t in sf_type):
+        if requested["TT"]:
             SF_y_TT[y_shift] = SF_dicts["SF_TT_y"]
-        if any("SS" in t for t in sf_type):
+        if requested["SS"]:
             SF_y_SS[y_shift] = SF_dicts["SF_SS_y"]
-        if any("LLL" in t for t in sf_type):
+        if requested["LLL"]:
             SF_y_LLL[y_shift] = SF_dicts["SF_LLL_y"]
-        if any("LTT" in t for t in sf_type):
+        if requested["LTT"]:
             SF_y_LTT[y_shift] = SF_dicts["SF_LTT_y"]
-        if any("LSS" in t for t in sf_type):
+        if requested["LSS"]:
             SF_y_LSS[y_shift] = SF_dicts["SF_LSS_y"]
 
         # Calculate separation distances in y
@@ -539,21 +660,21 @@ def generate_structure_functions_3d(  # noqa: C901, D417
             boundary,
         )
 
-        if any("ASF_V" in t for t in sf_type):
+        if requested["ASF_V"]:
             SF_adv_z[z_shift] = SF_dicts["SF_advection_velocity_z"]
-        if any("ASF_S" in t for t in sf_type):
+        if requested["ASF_S"]:
             SF_z_scalar[z_shift] = SF_dicts["SF_advection_scalar_z"]
-        if any("LL" in t for t in sf_type):
+        if requested["LL"]:
             SF_z_LL[z_shift] = SF_dicts["SF_LL_z"]
-        if any("TT" in t for t in sf_type):
+        if requested["TT"]:
             SF_z_TT[z_shift] = SF_dicts["SF_TT_z"]
-        if any("SS" in t for t in sf_type):
+        if requested["SS"]:
             SF_z_SS[z_shift] = SF_dicts["SF_SS_z"]
-        if any("LLL" in t for t in sf_type):
+        if requested["LLL"]:
             SF_z_LLL[z_shift] = SF_dicts["SF_LLL_z"]
-        if any("LTT" in t for t in sf_type):
+        if requested["LTT"]:
             SF_z_LTT[z_shift] = SF_dicts["SF_LTT_z"]
-        if any("LSS" in t for t in sf_type):
+        if requested["LSS"]:
             SF_z_LSS[z_shift] = SF_dicts["SF_LSS_z"]
 
         # Calculate separation distances in z
@@ -562,35 +683,35 @@ def generate_structure_functions_3d(  # noqa: C901, D417
         )
 
     if nbins is not None:
-        if any("ASF_V" in t for t in sf_type):
+        if requested["ASF_V"]:
             xd_bin, SF_adv_x = bin_data(xd, SF_adv_x, nbins)
             yd_bin, SF_adv_y = bin_data(yd, SF_adv_y, nbins)
             zd_bin, SF_adv_z = bin_data(zd, SF_adv_z, nbins)
-        if any("ASF_S" in t for t in sf_type):
+        if requested["ASF_S"]:
             xd_bin, SF_x_scalar = bin_data(xd, SF_x_scalar, nbins)
             yd_bin, SF_y_scalar = bin_data(yd, SF_y_scalar, nbins)
             zd_bin, SF_z_scalar = bin_data(zd, SF_z_scalar, nbins)
-        if any("LL" in t for t in sf_type):
+        if requested["LL"]:
             xd_bin, SF_x_LL = bin_data(xd, SF_x_LL, nbins)
             yd_bin, SF_y_LL = bin_data(yd, SF_y_LL, nbins)
             zd_bin, SF_z_LL = bin_data(zd, SF_z_LL, nbins)
-        if any("TT" in t for t in sf_type):
+        if requested["TT"]:
             xd_bin, SF_x_TT = bin_data(xd, SF_x_TT, nbins)
             yd_bin, SF_y_TT = bin_data(yd, SF_y_TT, nbins)
             zd_bin, SF_z_TT = bin_data(zd, SF_z_TT, nbins)
-        if any("SS" in t for t in sf_type):
+        if requested["SS"]:
             xd_bin, SF_x_SS = bin_data(xd, SF_x_SS, nbins)
             yd_bin, SF_y_SS = bin_data(yd, SF_y_SS, nbins)
             zd_bin, SF_z_SS = bin_data(zd, SF_z_SS, nbins)
-        if any("LLL" in t for t in sf_type):
+        if requested["LLL"]:
             xd_bin, SF_x_LLL = bin_data(xd, SF_x_LLL, nbins)
             yd_bin, SF_y_LLL = bin_data(yd, SF_y_LLL, nbins)
             zd_bin, SF_z_LLL = bin_data(zd, SF_z_LLL, nbins)
-        if any("LTT" in t for t in sf_type):
+        if requested["LTT"]:
             xd_bin, SF_x_LTT = bin_data(xd, SF_x_LTT, nbins)
             yd_bin, SF_y_LTT = bin_data(yd, SF_y_LTT, nbins)
             zd_bin, SF_z_LTT = bin_data(zd, SF_z_LTT, nbins)
-        if any("LSS" in t for t in sf_type):
+        if requested["LSS"]:
             xd_bin, SF_x_LSS = bin_data(xd, SF_x_LSS, nbins)
             yd_bin, SF_y_LSS = bin_data(yd, SF_y_LSS, nbins)
             zd_bin, SF_z_LSS = bin_data(zd, SF_z_LSS, nbins)

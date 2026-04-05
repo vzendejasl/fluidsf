@@ -89,6 +89,13 @@ def compute_axis_index_list(n_half: int, nproc_axis: int, rank_axis: int) -> np.
         index_list[0] = rank_axis
         return index_list
 
+    # The original fastSF-style mirroring works cleanly when each processor owns
+    # an even number of indices. For odd ownership counts it can generate
+    # duplicates and miss indices entirely, so fall back to a simple strided
+    # assignment that still covers the axis exactly once across all ranks.
+    if list_size % 2 == 1:
+        return np.arange(rank_axis, n_half, nproc_axis, dtype=np.int64)
+
     for i in range(0, list_size, 2):
         base_index = rank_axis + i * nproc_axis
         index_list[i] = base_index
