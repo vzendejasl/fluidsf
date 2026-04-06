@@ -1,8 +1,8 @@
 """
-Compare the legacy 3D implementation against the MPI backend.
+Compare the main 3D sample-data workflow in serial and MPI.
 
 Run with:
-    mpirun -launcher fork -n 4 python examples/python_scripts/ex_3d_mpi_compare.py
+    mpirun -launcher fork -n 4 python examples/python_scripts/ex_3d_serial_vs_mpi_sample_data.py
 """
 
 from __future__ import annotations
@@ -16,18 +16,26 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pooch
+import xarray as xr
 from mpi4py import MPI
 
 import fluidsf
 
 
-def build_data():
-    x = np.linspace(0.0, 1.0, 12)
-    y = np.linspace(0.0, 1.0, 12)
-    z = np.linspace(0.0, 1.0, 12)
-    u, v, w = np.meshgrid(x, y, z, indexing="ij")
-    scalar = u + 2.0 * v
-    return x, y, z, u, v, w, scalar
+def load_data():
+    file_path = pooch.retrieve(
+        url="https://zenodo.org/records/15278227/files/langmuir_fields.nc",
+        known_hash="d32f5f4c02791ddc584abecc572a5f06a948638ba4e45c4d6952a0723c3c1e40",
+    )
+    ds = xr.load_dataset(file_path, decode_timedelta=False).isel(time=1)
+    # The sample file stores fields in (z, y, x). Convert to the public
+    # (x, y, z) layout expected by the public 3D API before comparing serial
+    # and MPI on the same physical subset.
+    u = np.transpose(ds.u.values[-60:, :, :], (2, 1, 0))
+    v = np.transpose(ds.v.values[-60:, :, :], (2, 1, 0))
+    w = np.transpose(ds.w.values[-60:, :, :], (2, 1, 0))
+    return (u, v, w, ds.xF.values[:], ds.yF.values[:], ds.zF.values[-60:])
 
 
 def main():
@@ -43,10 +51,13 @@ def main():
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    x, y, z, u, v, w, scalar = build_data()
-    sf_type = ["ASF_V", "ASF_S", "LL", "TT", "SS", "LLL", "LTT", "LSS"]
+    u, v, w, x, y, z = load_data()
+    sf_type = ["ASF_V", "LL", "LLL", "LTT"]
     boundary = ["periodic-x", "periodic-y"]
 
+    # The notebook launches this helper under mpirun because the notebook kernel
+    # itself stays single-process. Rank 0 writes the MPI results back to disk so
+    # the notebook can reload them as ordinary NumPy arrays.
     mpi_sf = fluidsf.generate_structure_functions_3d(
         u,
         v,
@@ -55,14 +66,17 @@ def main():
         y,
         z,
         sf_type=sf_type,
-        scalar=scalar,
         boundary=boundary,
         backend="mpi",
         comm=comm,
     )
 
+    participating_ranks = comm.gather(rank, root=0)
+
     if rank != 0:
         return
+
+    print(f"MPI ranks participating: {participating_ranks}")
 
     serial_sf = fluidsf.generate_structure_functions_3d(
         u,
@@ -72,64 +86,69 @@ def main():
         y,
         z,
         sf_type=sf_type,
-        scalar=scalar,
         boundary=boundary,
     )
 
     comparison_keys = [
         "SF_advection_velocity_x",
-        "SF_advection_scalar_x",
+        "SF_advection_velocity_y",
+        "SF_advection_velocity_z",
         "SF_LL_x",
-        "SF_TT_x",
-        "SF_SS_x",
+        "SF_LL_y",
+        "SF_LL_z",
         "SF_LLL_x",
+        "SF_LLL_y",
+        "SF_LLL_z",
         "SF_LTT_x",
-        "SF_LSS_x",
+        "SF_LTT_y",
+        "SF_LTT_z",
     ]
+    diffs = {}
     for key in comparison_keys:
-        diff = float(np.max(np.abs(serial_sf[key] - mpi_sf[key])))
-        print(f"{key}: max abs diff = {diff:.3e}")
+        diffs[key] = float(np.max(np.abs(serial_sf[key] - mpi_sf[key])))
+        print(f"{key}: max abs diff = {diffs[key]:.3e}")
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     for axis_index, axis_name in enumerate(["x", "y", "z"]):
+        diff_key = f"{axis_name}-diffs"
         axes[axis_index].plot(
-            serial_sf[f"x-diffs" if axis_name == "x" else f"{axis_name}-diffs"],
+            serial_sf[diff_key],
             serial_sf[f"SF_LL_{axis_name}"],
             color="C0",
             linestyle="-",
-            label="SF_LL serial",
+            label="LL serial",
         )
         axes[axis_index].plot(
-            mpi_sf[f"x-diffs" if axis_name == "x" else f"{axis_name}-diffs"],
+            mpi_sf[diff_key],
             mpi_sf[f"SF_LL_{axis_name}"],
             color="C0",
             linestyle="--",
-            label="SF_LL mpi",
+            label="LL mpi",
         )
         axes[axis_index].plot(
-            serial_sf[f"x-diffs" if axis_name == "x" else f"{axis_name}-diffs"],
+            serial_sf[diff_key],
             serial_sf[f"SF_advection_velocity_{axis_name}"],
             color="C1",
             linestyle="-",
             label="ASF_V serial",
         )
         axes[axis_index].plot(
-            mpi_sf[f"x-diffs" if axis_name == "x" else f"{axis_name}-diffs"],
+            mpi_sf[diff_key],
             mpi_sf[f"SF_advection_velocity_{axis_name}"],
             color="C1",
             linestyle="--",
             label="ASF_V mpi",
         )
-        axes[axis_index].set_title(f"3D Along {axis_name}")
-        axes[axis_index].set_xlabel("Separation distance")
+        axes[axis_index].set_title(f"Example 3D Along {axis_name}")
+        axes[axis_index].set_xlabel("Separation distance [m]")
         axes[axis_index].set_ylabel("Structure function")
         axes[axis_index].legend(fontsize=7)
     fig.tight_layout()
-    fig.savefig(output_dir / "ex_3d_mpi_compare.png", dpi=150)
+    fig.savefig(output_dir / "ex_3d_serial_vs_mpi_sample_data.png", dpi=150)
     plt.close(fig)
 
     np.savez(
-        output_dir / "ex_3d_mpi_compare.npz",
+        output_dir / "ex_3d_serial_vs_mpi_sample_data.npz",
         x_diffs=serial_sf["x-diffs"],
         y_diffs=serial_sf["y-diffs"],
         z_diffs=serial_sf["z-diffs"],
@@ -137,6 +156,7 @@ def main():
         **{f"mpi_{key}": mpi_sf[key] for key in comparison_keys},
     )
     print(f"Saved outputs to {output_dir}")
+    print(f"Largest diff = {max(diffs.values()):.3e}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 import numpy as np
 
-from fluidsf.calculate_advection_3d import calculate_advection_3d
-from fluidsf.calculate_structure_function_3d import calculate_structure_function_3d
+from fluidsf.generate_structure_functions_3d import generate_structure_functions_3d
 from fluidsf.mpi.slab_decomp_3d import (
     calculate_advection_3d_public_x_slab_mpi,
     compute_advective_sf_direction_3d_periodic_z_slab_mpi,
@@ -144,7 +143,9 @@ def test_calculate_advection_3d_public_x_slab_mpi_matches_serial_convention():
     u_adv, v_adv, w_adv = calculate_advection_3d_public_x_slab_mpi(
         u, v, w, x, y, z, comm=comm
     )
-    serial_u_adv, serial_v_adv, serial_w_adv = calculate_advection_3d(u, v, w, x, y, z)
+    serial_u_adv = 2.0 * u + 7.0 * w
+    serial_v_adv = 11.0 * u + 3.0 * v
+    serial_w_adv = 13.0 * v + 5.0 * w
 
     np.testing.assert_allclose(u_adv, serial_u_adv)
     np.testing.assert_allclose(v_adv, serial_v_adv)
@@ -154,7 +155,7 @@ def test_calculate_advection_3d_public_x_slab_mpi_matches_serial_convention():
     scalar_adv = calculate_advection_3d_public_x_slab_mpi(
         u, v, w, x, y, z, scalar_local=scalar, comm=comm
     )
-    serial_scalar_adv = calculate_advection_3d(u, v, w, x, y, z, scalar=scalar)
+    serial_scalar_adv = u * (2.0 + 17.0 * yy) + v * (3.0 + 17.0 * xx) + w * 5.0
     np.testing.assert_allclose(scalar_adv, serial_scalar_adv)
 
 
@@ -179,21 +180,18 @@ def test_compute_directional_sf_3d_public_x_slab_mpi_matches_serial_convention()
             boundary=None,
             comm=comm,
         )
-        serial = calculate_structure_function_3d(
+        serial = generate_structure_functions_3d(
             u,
             v,
             w,
-            None,
-            None,
-            None,
-            1,
-            1,
-            1,
-            ("LL", "TT"),
+            x,
+            y,
+            z,
+            sf_type=["LL", "TT"],
             boundary=None,
         )
-        np.testing.assert_allclose(helper["SF_LL"], serial[serial_key])
-        np.testing.assert_allclose(helper["SF_TT"], serial[f"SF_TT_{direction}"])
+        np.testing.assert_allclose(helper["SF_LL"], serial[serial_key][1])
+        np.testing.assert_allclose(helper["SF_TT"], serial[f"SF_TT_{direction}"][1])
 
 def test_compute_directional_sf_3d_public_x_slab_mpi_periodic_matches_serial_convention():
     comm = _FakeCommSingleRank()
@@ -216,21 +214,18 @@ def test_compute_directional_sf_3d_public_x_slab_mpi_periodic_matches_serial_con
             boundary="periodic-all",
             comm=comm,
         )
-        serial = calculate_structure_function_3d(
+        serial = generate_structure_functions_3d(
             u,
             v,
             w,
-            None,
-            None,
-            None,
-            1,
-            1,
-            1,
-            ("LL", "TT"),
+            x,
+            y,
+            z,
+            sf_type=["LL", "TT"],
             boundary="periodic-all",
         )
-        np.testing.assert_allclose(helper["SF_LL"], serial[serial_key])
-        np.testing.assert_allclose(helper["SF_TT"], serial[f"SF_TT_{direction}"])
+        np.testing.assert_allclose(helper["SF_LL"], serial[serial_key][1])
+        np.testing.assert_allclose(helper["SF_TT"], serial[f"SF_TT_{direction}"][1])
 
 
 def test_advective_sf_helper_zero_count_returns_nan():

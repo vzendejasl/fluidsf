@@ -594,10 +594,9 @@ def compute_directional_sf_3d_public_x_slab_mpi(
 ) -> dict[str, float]:
     """Compute axis-aligned 3D structure functions on public-layout x-owned slabs.
 
-    The public MPI backend accepts arrays shaped ``(local_x, y, z)`` on each rank.
-    To remain bit-for-bit compatible with the legacy serial 3D implementation, the
-    directional shifts in this helper follow that legacy axis convention:
-    ``x -> axis 2``, ``y -> axis 1``, ``z -> axis 0``.
+    The public MPI backend accepts arrays shaped ``(local_x, y, z)`` on each rank
+    and evaluates the physical axes directly: ``x -> axis 0``, ``y -> axis 1``,
+    ``z -> axis 2``.
     """
     if comm is None:
         _require_mpi()
@@ -608,25 +607,25 @@ def compute_directional_sf_3d_public_x_slab_mpi(
     is_periodic = boundary == "periodic-all"
     if boundary is None:
         if direction == "x":
-            shift_fn = lambda arr: _shift_array_nonperiodic_local(arr, shift, axis=2)
+            shift_fn = lambda arr: shift_axis0_nonperiodic(arr, shift, comm)
             longitudinal = "u"
         elif direction == "y":
             shift_fn = lambda arr: _shift_array_nonperiodic_local(arr, shift, axis=1)
             longitudinal = "v"
         elif direction == "z":
-            shift_fn = lambda arr: shift_axis0_nonperiodic(arr, shift, comm)
+            shift_fn = lambda arr: _shift_array_nonperiodic_local(arr, shift, axis=2)
             longitudinal = "w"
         else:
             raise ValueError("direction must be one of 'x', 'y', or 'z'.")
     elif is_periodic:
         if direction == "x":
-            shift_fn = lambda arr: np.roll(arr, shift=-shift, axis=2)
+            shift_fn = lambda arr: periodic_shift_axis0(arr, shift, comm)
             longitudinal = "u"
         elif direction == "y":
             shift_fn = lambda arr: np.roll(arr, shift=-shift, axis=1)
             longitudinal = "v"
         elif direction == "z":
-            shift_fn = lambda arr: periodic_shift_axis0(arr, shift, comm)
+            shift_fn = lambda arr: np.roll(arr, shift=-shift, axis=2)
             longitudinal = "w"
         else:
             raise ValueError("direction must be one of 'x', 'y', or 'z'.")
@@ -730,9 +729,8 @@ def calculate_advection_3d_public_x_slab_mpi(
 ):
     """Distributed version of ``calculate_advection_3d`` on public slabs.
 
-    The input slabs are shaped ``(local_x, y, z)``, but the gradient directions
-    intentionally mirror the legacy serial 3D implementation:
-    ``x -> axis 2``, ``y -> axis 1``, ``z -> axis 0``.
+    The input slabs are shaped ``(local_x, y, z)`` and follow the public
+    ``(x, y, z)`` axis ordering directly.
     """
     if comm is None:
         _require_mpi()
@@ -745,22 +743,22 @@ def calculate_advection_3d_public_x_slab_mpi(
     dz = np.abs(z[0] - z[1])
 
     if scalar_local is not None:
-        dsdx = np.gradient(scalar_local, dx, axis=2)
+        dsdx = gradient_axis0_distributed_nonperiodic(scalar_local, dx, comm)
         dsdy = np.gradient(scalar_local, dy, axis=1)
-        dsdz = gradient_axis0_distributed_nonperiodic(scalar_local, dz, comm)
+        dsdz = np.gradient(scalar_local, dz, axis=2)
         return u_local * dsdx + v_local * dsdy + w_local * dsdz
 
-    dudx = np.gradient(u_local, dx, axis=2)
+    dudx = gradient_axis0_distributed_nonperiodic(u_local, dx, comm)
     dudy = np.gradient(u_local, dy, axis=1)
-    dudz = gradient_axis0_distributed_nonperiodic(u_local, dz, comm)
+    dudz = np.gradient(u_local, dz, axis=2)
 
-    dvdx = np.gradient(v_local, dx, axis=2)
+    dvdx = gradient_axis0_distributed_nonperiodic(v_local, dx, comm)
     dvdy = np.gradient(v_local, dy, axis=1)
-    dvdz = gradient_axis0_distributed_nonperiodic(v_local, dz, comm)
+    dvdz = np.gradient(v_local, dz, axis=2)
 
-    dwdx = np.gradient(w_local, dx, axis=2)
+    dwdx = gradient_axis0_distributed_nonperiodic(w_local, dx, comm)
     dwdy = np.gradient(w_local, dy, axis=1)
-    dwdz = gradient_axis0_distributed_nonperiodic(w_local, dz, comm)
+    dwdz = np.gradient(w_local, dz, axis=2)
 
     u_advection = u_local * dudx + v_local * dudy + w_local * dudz
     v_advection = u_local * dvdx + v_local * dvdy + w_local * dvdz
@@ -786,9 +784,8 @@ def compute_advective_sf_direction_3d_public_x_slab_mpi(
     """Compute periodic advective SFs on public-layout x-owned slabs.
 
     This helper is currently internal-only. It assumes arrays shaped
-    ``(local_x, y, z)``, but its shift directions intentionally mirror the
-    legacy serial 3D implementation: ``x -> axis 2``, ``y -> axis 1``,
-    ``z -> axis 0``.
+    ``(local_x, y, z)`` and follows the public physical axes directly:
+    ``x -> axis 0``, ``y -> axis 1``, ``z -> axis 2``.
     """
     if comm is None:
         _require_mpi()
@@ -797,11 +794,11 @@ def compute_advective_sf_direction_3d_public_x_slab_mpi(
         comm = MPI.COMM_WORLD
 
     if direction == "x":
-        shift_fn = lambda arr: np.roll(arr, shift=-shift, axis=2)
+        shift_fn = lambda arr: periodic_shift_axis0(arr, shift, comm)
     elif direction == "y":
         shift_fn = lambda arr: np.roll(arr, shift=-shift, axis=1)
     elif direction == "z":
-        shift_fn = lambda arr: periodic_shift_axis0(arr, shift, comm)
+        shift_fn = lambda arr: np.roll(arr, shift=-shift, axis=2)
     else:
         raise ValueError("direction must be one of 'x', 'y', or 'z'.")
 

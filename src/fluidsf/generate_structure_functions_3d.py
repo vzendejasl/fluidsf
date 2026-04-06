@@ -3,15 +3,11 @@ import warnings
 import numpy as np
 
 from .bin_data import bin_data
-from .calculate_advection_3d import calculate_advection_3d
-from .calculate_separation_distances_3d import calculate_separation_distances_3d
-from .calculate_structure_function_3d import calculate_structure_function_3d
 from .mpi.slab_decomp_3d import (
     calculate_advection_3d_public_x_slab_mpi,
     compute_directional_sf_3d_public_x_slab_mpi,
     compute_slab_bounds_1d,
 )
-from .shift_array_1d import shift_array_1d
 
 
 def _requested_structure_functions(sf_type):
@@ -60,6 +56,177 @@ def _axis_uses_periodic_shifts(boundary, axis_name):
     return ("periodic-all" in entries) or (f"periodic-{axis_name}" in entries)
 
 
+def _normalize_public_3d_inputs(u, v, w, x, y, z, scalar=None, backend="serial"):
+    """Return public-layout arrays shaped ``(len(x), len(y), len(z))``.
+
+    The 3D public API historically mixed two conventions:
+    - the documented/public layout ``(x, y, z)``
+    - a legacy internal layout ``(z, y, x)`` used by older examples
+
+    Normalize the legacy replicated layout up front so both the serial and MPI
+    paths evaluate the same physical problem.
+    """
+    if u.shape != v.shape or u.shape != w.shape:
+        raise ValueError("u, v, and w must have identical shapes.")
+    if u.ndim != 3:
+        raise ValueError("u, v, and w must be 3D arrays.")
+    if scalar is not None and scalar.shape != u.shape:
+        raise ValueError("scalar must match u, v, and w.")
+
+    public_shape = (len(x), len(y), len(z))
+    legacy_shape = (len(z), len(y), len(x))
+
+    if u.shape == public_shape:
+        normalized_scalar = None if scalar is None else np.ascontiguousarray(scalar)
+        return (
+            np.ascontiguousarray(u),
+            np.ascontiguousarray(v),
+            np.ascontiguousarray(w),
+            normalized_scalar,
+        )
+
+    if u.shape == legacy_shape:
+        if backend == "mpi" and u.shape[0] != len(z):
+            raise ValueError(
+                "Legacy 3D inputs must be replicated arrays shaped (len(z), len(y), len(x))."
+            )
+        normalized_scalar = None
+        if scalar is not None:
+            normalized_scalar = np.ascontiguousarray(np.transpose(scalar, (2, 1, 0)))
+        return (
+            np.ascontiguousarray(np.transpose(u, (2, 1, 0))),
+            np.ascontiguousarray(np.transpose(v, (2, 1, 0))),
+            np.ascontiguousarray(np.transpose(w, (2, 1, 0))),
+            normalized_scalar,
+        )
+
+    if backend == "mpi" and u.shape[1:] == (len(y), len(z)):
+        normalized_scalar = None if scalar is None else np.ascontiguousarray(scalar)
+        return (
+            np.ascontiguousarray(u),
+            np.ascontiguousarray(v),
+            np.ascontiguousarray(w),
+            normalized_scalar,
+        )
+
+    raise ValueError(
+        "3D inputs must use the public layout (len(x), len(y), len(z)) or the "
+        "legacy replicated layout (len(z), len(y), len(x))."
+    )
+
+
+def _shift_public_3d_array(arr, shift, axis, periodic):
+    """Shift a public-layout ``(x, y, z)`` array forward along one axis."""
+    if shift == 0:
+        return np.ascontiguousarray(arr)
+    if periodic:
+        return np.roll(arr, shift=-shift, axis=axis)
+
+    shifted = np.full(arr.shape, np.nan, dtype=np.result_type(arr, np.float64))
+    dst = [slice(None), slice(None), slice(None)]
+    src = [slice(None), slice(None), slice(None)]
+    dst[axis] = slice(None, -shift)
+    src[axis] = slice(shift, None)
+    shifted[tuple(dst)] = arr[tuple(src)]
+    return shifted
+
+
+def _calculate_advection_3d_public(u, v, w, x, y, z, scalar=None):
+    """Distributed-API-consistent 3D advection for public-layout arrays."""
+    dx = np.abs(x[0] - x[1])
+    dy = np.abs(y[0] - y[1])
+    dz = np.abs(z[0] - z[1])
+
+    if scalar is not None:
+        dsdx, dsdy, dsdz = np.gradient(scalar, dx, dy, dz, axis=(0, 1, 2))
+        return u * dsdx + v * dsdy + w * dsdz
+
+    dudx, dudy, dudz = np.gradient(u, dx, dy, dz, axis=(0, 1, 2))
+    dvdx, dvdy, dvdz = np.gradient(v, dx, dy, dz, axis=(0, 1, 2))
+    dwdx, dwdy, dwdz = np.gradient(w, dx, dy, dz, axis=(0, 1, 2))
+
+    u_advection = u * dudx + v * dudy + w * dudz
+    v_advection = u * dvdx + v * dvdy + w * dvdz
+    w_advection = u * dwdx + v * dwdy + w * dwdz
+    return u_advection, v_advection, w_advection
+
+
+def _compute_directional_sf_3d_public(
+    u,
+    v,
+    w,
+    *,
+    direction,
+    shift,
+    sf_type,
+    boundary,
+    scalar=None,
+    adv_x=None,
+    adv_y=None,
+    adv_z=None,
+    adv_scalar=None,
+):
+    """Compute one axis-aligned 3D structure-function slice on public arrays."""
+    requested = _requested_structure_functions(sf_type)
+    axis_map = {"x": 0, "y": 1, "z": 2}
+    axis = axis_map[direction]
+    periodic = _axis_uses_periodic_shifts(boundary, direction)
+
+    u_shift = _shift_public_3d_array(u, shift, axis, periodic)
+    v_shift = _shift_public_3d_array(v, shift, axis, periodic)
+    w_shift = _shift_public_3d_array(w, shift, axis, periodic)
+    du = u_shift - u
+    dv = v_shift - v
+    dw = w_shift - w
+
+    if direction == "x":
+        d_long = du
+        trans_a = dv
+        trans_b = dw
+    elif direction == "y":
+        d_long = dv
+        trans_a = du
+        trans_b = dw
+    else:
+        d_long = dw
+        trans_a = du
+        trans_b = dv
+
+    ds = None
+    if scalar is not None and any(requested[name] for name in ("ASF_S", "SS", "LSS")):
+        scalar_shift = _shift_public_3d_array(scalar, shift, axis, periodic)
+        ds = scalar_shift - scalar
+
+    output = {}
+    if requested["ASF_V"]:
+        adv_x_shift = _shift_public_3d_array(adv_x, shift, axis, periodic)
+        adv_y_shift = _shift_public_3d_array(adv_y, shift, axis, periodic)
+        adv_z_shift = _shift_public_3d_array(adv_z, shift, axis, periodic)
+        output[f"SF_advection_velocity_{direction}"] = np.nanmean(
+            (adv_x_shift - adv_x) * du
+            + (adv_y_shift - adv_y) * dv
+            + (adv_z_shift - adv_z) * dw
+        )
+    if requested["ASF_S"]:
+        adv_scalar_shift = _shift_public_3d_array(adv_scalar, shift, axis, periodic)
+        output[f"SF_advection_scalar_{direction}"] = np.nanmean(
+            (adv_scalar_shift - adv_scalar) * ds
+        )
+    if requested["LL"]:
+        output[f"SF_LL_{direction}"] = np.nanmean(d_long**2)
+    if requested["TT"]:
+        output[f"SF_TT_{direction}"] = np.nanmean(trans_a**2 + trans_b**2)
+    if requested["SS"]:
+        output[f"SF_SS_{direction}"] = np.nanmean(ds**2)
+    if requested["LLL"]:
+        output[f"SF_LLL_{direction}"] = np.nanmean(d_long**3)
+    if requested["LTT"]:
+        output[f"SF_LTT_{direction}"] = np.nanmean(d_long * (trans_a**2 + trans_b**2))
+    if requested["LSS"]:
+        output[f"SF_LSS_{direction}"] = np.nanmean(d_long * ds**2)
+    return output
+
+
 def _generate_structure_functions_3d_mpi_backend(
     u,
     v,
@@ -91,10 +258,9 @@ def _generate_structure_functions_3d_mpi_backend(
             "The MPI backend supports only boundary=None and the periodic boundary "
             "entries: periodic-x, periodic-y, periodic-z, periodic-all."
         )
-    if u.shape != v.shape or u.shape != w.shape:
-        raise ValueError("u, v, and w must have identical shapes.")
-    if u.ndim != 3:
-        raise ValueError("u, v, and w must be 3D arrays.")
+    u, v, w, scalar = _normalize_public_3d_inputs(
+        u, v, w, x, y, z, scalar=scalar, backend="mpi"
+    )
 
     size = comm.Get_size()
     total_x = comm.allreduce(u.shape[0])
@@ -107,8 +273,6 @@ def _generate_structure_functions_3d_mpi_backend(
         w_public_local = np.ascontiguousarray(w)
         scalar_public_local = None
         if scalar is not None:
-            if scalar.shape != u.shape:
-                raise ValueError("scalar must match u, v, and w for the MPI backend.")
             scalar_public_local = np.ascontiguousarray(scalar)
     elif u.shape == (len(x), len(y), len(z)):
         # Replicated input: extract the public-layout slab owned by this rank.
@@ -118,8 +282,6 @@ def _generate_structure_functions_3d_mpi_backend(
         w_public_local = np.ascontiguousarray(w[start:stop, :, :])
         scalar_public_local = None
         if scalar is not None:
-            if scalar.shape != u.shape:
-                raise ValueError("scalar must match u, v, and w for the MPI backend.")
             scalar_public_local = np.ascontiguousarray(scalar[start:stop, :, :])
     else:
         raise ValueError(
@@ -138,7 +300,6 @@ def _generate_structure_functions_3d_mpi_backend(
         "z-diffs": np.asarray(z[: len(sep_z) + 1], dtype=np.float64) - float(z[0]),
     }
 
-    adv_sf_type = tuple(name for name in ("ASF_V", "ASF_S") if requested[name])
     direct_sf_type = tuple(
         name
         for name in ("ASF_V", "ASF_S", "LL", "TT", "SS", "LLL", "LTT", "LSS")
@@ -313,9 +474,10 @@ def generate_structure_functions_3d(  # noqa: C901, D417
             Number of bins in the structure function. Defaults to None, i.e. does
             not bin the data.
         backend: str, optional
-            Execution backend. ``"serial"`` preserves the legacy implementation.
-            ``"mpi"`` enables the distributed MPI backend for velocity structure
-            functions with ``boundary="periodic-all"``.
+            Execution backend. ``"serial"`` evaluates the public ``(x, y, z)``
+            layout directly while still accepting the legacy replicated
+            ``(z, y, x)`` layout. ``"mpi"`` enables the distributed public-layout
+            backend.
         px: int, optional
             Reserved for MPI backend compatibility. The current distributed
             backend ignores this value.
@@ -428,6 +590,10 @@ def generate_structure_functions_3d(  # noqa: C901, D417
     if backend != "serial":
         raise ValueError("backend must be either 'serial' or 'mpi'.")
 
+    u, v, w, scalar = _normalize_public_3d_inputs(
+        u, v, w, x, y, z, scalar=scalar, backend="serial"
+    )
+
     # Initialize variables as NoneType
     SF_adv_x = None
     SF_adv_y = None
@@ -488,12 +654,12 @@ def generate_structure_functions_3d(  # noqa: C901, D417
         SF_adv_x = np.zeros(len(sep_x) + 1)
         SF_adv_y = np.zeros(len(sep_y) + 1)
         SF_adv_z = np.zeros(len(sep_z) + 1)
-        adv_x, adv_y, adv_z = calculate_advection_3d(u, v, w, x, y, z)
+        adv_x, adv_y, adv_z = _calculate_advection_3d_public(u, v, w, x, y, z)
     if requested["ASF_S"]:
         SF_x_scalar = np.zeros(len(sep_x) + 1)
         SF_y_scalar = np.zeros(len(sep_y) + 1)
         SF_z_scalar = np.zeros(len(sep_z) + 1)
-        adv_scalar = calculate_advection_3d(u, v, w, x, y, z, scalar)
+        adv_scalar = _calculate_advection_3d_public(u, v, w, x, y, z, scalar)
     if requested["LL"]:
         SF_x_LL = np.zeros(len(sep_x) + 1)
         SF_y_LL = np.zeros(len(sep_y) + 1)
@@ -527,33 +693,19 @@ def generate_structure_functions_3d(  # noqa: C901, D417
 
     # Iterate over separations in x, y, and z
     for x_shift in sep_x:
-        y_shift = 1
-        z_shift = 1
-        if boundary is not None:
-            if any("periodic-all" in b for b in boundary) or any(
-                "periodic-x" in b for b in boundary
-            ):
-                xroll = shift_array_1d(x, shift_by=x_shift, boundary="Periodic")
-
-            else:
-                xroll = shift_array_1d(x, shift_by=x_shift, boundary=None)
-        else:
-            xroll = shift_array_1d(x, shift_by=x_shift, boundary=None)
-
-        SF_dicts = calculate_structure_function_3d(
+        SF_dicts = _compute_directional_sf_3d_public(
             u,
             v,
             w,
-            adv_x,
-            adv_y,
-            adv_z,
-            x_shift,
-            y_shift,
-            z_shift,
-            sf_type,
-            scalar,
-            adv_scalar,
-            boundary,
+            direction="x",
+            shift=x_shift,
+            sf_type=sf_type,
+            boundary=boundary,
+            scalar=scalar,
+            adv_x=adv_x,
+            adv_y=adv_y,
+            adv_z=adv_z,
+            adv_scalar=adv_scalar,
         )
 
         if requested["ASF_V"]:
@@ -573,39 +725,22 @@ def generate_structure_functions_3d(  # noqa: C901, D417
         if requested["LSS"]:
             SF_x_LSS[x_shift] = SF_dicts["SF_LSS_x"]
 
-        # Calculate separation distances in x
-        xd[x_shift], tmp, tmp = calculate_separation_distances_3d(
-            x[0], y[0], z[0], xroll[0], y[0], z[0]
-        )
+        xd[x_shift] = float(np.abs(x[x_shift] - x[0]))
 
     for y_shift in sep_y:
-        x_shift = 1
-        z_shift = 1
-        if boundary is not None:
-            if any("periodic-all" in b for b in boundary) or any(
-                "periodic-y" in b for b in boundary
-            ):
-                yroll = shift_array_1d(y, shift_by=y_shift, boundary="Periodic")
-            else:
-                yroll = shift_array_1d(y, shift_by=y_shift, boundary=None)
-
-        else:
-            yroll = shift_array_1d(y, shift_by=y_shift, boundary=None)
-
-        SF_dicts = calculate_structure_function_3d(
+        SF_dicts = _compute_directional_sf_3d_public(
             u,
             v,
             w,
-            adv_x,
-            adv_y,
-            adv_z,
-            x_shift,
-            y_shift,
-            z_shift,
-            sf_type,
-            scalar,
-            adv_scalar,
-            boundary,
+            direction="y",
+            shift=y_shift,
+            sf_type=sf_type,
+            boundary=boundary,
+            scalar=scalar,
+            adv_x=adv_x,
+            adv_y=adv_y,
+            adv_z=adv_z,
+            adv_scalar=adv_scalar,
         )
 
         if requested["ASF_V"]:
@@ -625,39 +760,22 @@ def generate_structure_functions_3d(  # noqa: C901, D417
         if requested["LSS"]:
             SF_y_LSS[y_shift] = SF_dicts["SF_LSS_y"]
 
-        # Calculate separation distances in y
-        tmp, yd[y_shift], tmp = calculate_separation_distances_3d(
-            x[0], y[0], z[0], x[0], yroll[0], z[0]
-        )
+        yd[y_shift] = float(np.abs(y[y_shift] - y[0]))
 
     for z_shift in sep_z:
-        x_shift = 1
-        y_shift = 1
-        if boundary is not None:
-            if any("periodic-all" in b for b in boundary) or any(
-                "periodic-z" in b for b in boundary
-            ):
-                zroll = shift_array_1d(z, shift_by=z_shift, boundary="Periodic")
-
-            else:
-                zroll = shift_array_1d(z, shift_by=z_shift, boundary=None)
-        else:
-            zroll = shift_array_1d(z, shift_by=z_shift, boundary=None)
-
-        SF_dicts = calculate_structure_function_3d(
+        SF_dicts = _compute_directional_sf_3d_public(
             u,
             v,
             w,
-            adv_x,
-            adv_y,
-            adv_z,
-            x_shift,
-            y_shift,
-            z_shift,
-            sf_type,
-            scalar,
-            adv_scalar,
-            boundary,
+            direction="z",
+            shift=z_shift,
+            sf_type=sf_type,
+            boundary=boundary,
+            scalar=scalar,
+            adv_x=adv_x,
+            adv_y=adv_y,
+            adv_z=adv_z,
+            adv_scalar=adv_scalar,
         )
 
         if requested["ASF_V"]:
@@ -677,10 +795,7 @@ def generate_structure_functions_3d(  # noqa: C901, D417
         if requested["LSS"]:
             SF_z_LSS[z_shift] = SF_dicts["SF_LSS_z"]
 
-        # Calculate separation distances in z
-        tmp, tmp, zd[z_shift] = calculate_separation_distances_3d(
-            x[0], y[0], z[0], x[0], y[0], zroll[0]
-        )
+        zd[z_shift] = float(np.abs(z[z_shift] - z[0]))
 
     if nbins is not None:
         if requested["ASF_V"]:

@@ -58,11 +58,24 @@ Run one of the example scripts from the repository root:
     $ python examples/python_scripts/ex_2d.py
     $ python examples/python_scripts/ex_3d.py
 
+For 3D calculations, the recommended array layout is the public `(x, y, z)` convention, meaning velocity or scalar fields should have shape `(len(x), len(y), len(z))`. For backward compatibility, replicated 3D inputs in the legacy `(z, y, x)` layout are still accepted and normalized internally, but new code should prefer the public ordering.
+
+There are also dedicated serial-vs-MPI comparison examples:
+
+    $ mpirun -launcher fork -n 4 python examples/python_scripts/ex_1d_serial_vs_mpi_synthetic_data.py
+    $ mpirun -launcher fork -n 4 python examples/python_scripts/ex_2d_serial_vs_mpi_sample_data.py
+    $ mpirun -launcher fork -n 4 python examples/python_scripts/ex_3d_serial_vs_mpi_sample_data.py
+    $ mpirun -launcher fork -n 4 python examples/python_scripts/ex_cascade_serial_vs_mpi_sample_data.py
+
+The 1D comparison uses a small synthetic dataset. The 2D, 3D, and cascade comparison examples use the same sample datasets as the main tutorials. The cascade comparison also checks that the bootstrapped cascade-rate estimates agree between serial and MPI.
+
 If you want to use the Jupyter notebooks:
 
     $ jupyter lab
 
 Then open a notebook in `examples/jupyter_notebooks/` and run the cells with `Shift+Enter`.
+
+If you start with the cascade tutorial notebook `examples/jupyter_notebooks/ex_cascade.ipynb` and want the matching serial-vs-MPI version of the same workflow, open `examples/jupyter_notebooks/ex_cascade_serial_vs_mpi_sample_data.ipynb`.
 
 ### Running the tests
 
@@ -102,7 +115,8 @@ Current MPI notes:
 
 - 1D MPI requires the full arrays on every rank
 - 2D MPI now supports distributed uniform-grid x-slabs shaped `(len(y), local_x)` and still falls back to full-array separation distribution for unsupported cases
-- 3D MPI supports full replicated arrays or distributed x-slabs shaped `(local_x, len(y), len(z))`
+- 3D MPI expects the public layout `(len(x), len(y), len(z))` for replicated arrays and `(local_x, len(y), len(z))` for distributed x-slabs
+- replicated 3D arrays in the legacy `(len(z), len(y), len(x))` layout are still accepted for backward compatibility and normalized automatically
 - the 3D backend supports `boundary=None`, `periodic-all`, and mixed periodic boundary combinations
 - all ranks receive the same public 3D MPI output dictionary
 
@@ -276,6 +290,14 @@ To run a specific test:
 ### Example notebooks and scripts
 
 Example Jupyter notebooks and python scripts can be found in the [examples directory](https://github.com/cassidymwagner/fluidsf/tree/main/examples). If you would like to write a new example, follow the format of the [current Jupyter notebook examples](https://github.com/cassidymwagner/fluidsf/tree/main/examples/jupyter_notebooks) and then create a stripped-down python script to accompany your example, similar to the [current python scripts](https://github.com/cassidymwagner/fluidsf/tree/main/examples/python_scripts). 
+
+Current naming convention:
+
+- `ex_*.py` and `ex_*.ipynb` are tutorial examples
+- `ex_*_serial_vs_mpi_synthetic_data.*` are serial-vs-MPI checks on manufactured data
+- `ex_*_serial_vs_mpi_sample_data.*` are serial-vs-MPI checks on the packaged sample datasets
+
+The serial-vs-MPI notebooks launch real MPI subprocesses with `mpirun`, then reload the rank-0 outputs into notebook-side dictionaries so the serial and MPI results can be compared in one place.
 
 Steps for running the examples:
 

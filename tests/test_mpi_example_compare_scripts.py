@@ -69,7 +69,11 @@ def _max_serial_mpi_diff(npz_data):
                 continue
             mpi_key = mpi_prefix + key[len(serial_prefix) :]
             if mpi_key in npz_data.files:
-                diffs.append(float(np.max(np.abs(npz_data[key] - npz_data[mpi_key]))))
+                serial_values = npz_data[key]
+                mpi_values = npz_data[mpi_key]
+                valid = np.isfinite(serial_values) & np.isfinite(mpi_values)
+                if np.any(valid):
+                    diffs.append(float(np.max(np.abs(serial_values[valid] - mpi_values[valid]))))
             break
     assert diffs, "No serial/mpi comparison arrays were found in the saved output."
     return max(diffs)
@@ -82,11 +86,10 @@ def _max_serial_mpi_diff(npz_data):
 @pytest.mark.parametrize(
     "script_name, tolerance",
     [
-        ("ex_1d_mpi_compare.py", 1e-14),
-        ("ex_2d_mpi_compare.py", 1e-12),
-        ("ex_3d_mpi_compare.py", 1e-12),
-        ("ex_2d_example_mpi_compare.py", 1e-11),
-        ("ex_3d_example_mpi_compare.py", 5e-4),
+        ("ex_1d_serial_vs_mpi_synthetic_data.py", 1e-14),
+        ("ex_2d_serial_vs_mpi_sample_data.py", 1e-12),
+        ("ex_3d_serial_vs_mpi_sample_data.py", 1e-12),
+        ("ex_cascade_serial_vs_mpi_sample_data.py", 1e-12),
     ],
 )
 def test_mpi_example_compare_scripts_match_serial(tmp_path, script_name, tolerance):

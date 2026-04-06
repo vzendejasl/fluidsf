@@ -29,7 +29,7 @@ file_path = pooch.retrieve(
 
 # Load the dataset
 # This is a numerical simulation of Langmuir turbulence, generated with Oceananigans.jl.
-ds = xr.load_dataset(file_path)
+ds = xr.load_dataset(file_path, decode_timedelta=False)
 ds = ds.isel(time=1)
 
 # Calculate spatial gradients of the velocity fields
@@ -152,11 +152,14 @@ cbar = fig.colorbar(pc1, ax=ax, orientation="vertical", label="[m/s]")
 # Note that we only use the upper 60 grid points (or meters) for this analysis, since
 # we are interested in upper ocean boundary layer dynamics.
 nn = 128
+u_sf = np.transpose(ds.u.values[-60:, :, :], (2, 1, 0))
+v_sf = np.transpose(ds.v.values[-60:, :, :], (2, 1, 0))
+w_sf = np.transpose(ds.w.values[-60:, :, :], (2, 1, 0))
 
 sf = fluidsf.generate_structure_functions_3d(
-    ds.u.values[-60:, :, :],
-    ds.v.values[-60:, :, :],
-    ds.w.values[-60:, :, :],
+    u_sf,
+    v_sf,
+    w_sf,
     ds.xF.values[:],
     ds.yF.values[:],
     ds.zF.values[-60:],

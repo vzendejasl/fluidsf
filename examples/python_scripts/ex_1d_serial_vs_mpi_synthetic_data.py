@@ -1,8 +1,8 @@
 """
-Compare the legacy 1D implementation against the MPI backend.
+Compare the 1D synthetic-data workflow in serial and MPI.
 
 Run with:
-    mpirun -launcher fork -n 4 python examples/python_scripts/ex_1d_mpi_compare.py
+    mpirun -launcher fork -n 4 python examples/python_scripts/ex_1d_serial_vs_mpi_synthetic_data.py
 """
 
 from __future__ import annotations
@@ -44,6 +44,10 @@ def main():
 
     x, u, v, scalar = build_data()
     sf_type = ["LL", "LLL", "LTT", "LSS"]
+
+    # The notebook launches this helper under mpirun because the notebook kernel
+    # itself stays single-process. Rank 0 writes the MPI results back to disk so
+    # the notebook can reload them as ordinary NumPy arrays.
     mpi_sf = fluidsf.generate_structure_functions_1d(
         u,
         x,
@@ -55,8 +59,12 @@ def main():
         comm=comm,
     )
 
+    participating_ranks = comm.gather(rank, root=0)
+
     if rank != 0:
         return
+
+    print(f"MPI ranks participating: {participating_ranks}")
 
     serial_sf = fluidsf.generate_structure_functions_1d(
         u,
@@ -68,24 +76,37 @@ def main():
     )
 
     comparison_keys = ["SF_LL", "SF_LLL", "SF_LTT", "SF_LSS"]
+    diffs = {}
     for key in comparison_keys:
-        diff = float(np.max(np.abs(serial_sf[key] - mpi_sf[key])))
-        print(f"{key}: max abs diff = {diff:.3e}")
+        diffs[key] = float(np.max(np.abs(serial_sf[key] - mpi_sf[key])))
+        print(f"{key}: max abs diff = {diffs[key]:.3e}")
 
     fig, ax = plt.subplots(figsize=(8, 5))
     for key, color in zip(comparison_keys, ["C0", "C1", "C2", "C3"]):
-        ax.plot(serial_sf["x-diffs"], serial_sf[key], color=color, linestyle="-", label=f"{key} serial")
-        ax.plot(mpi_sf["x-diffs"], mpi_sf[key], color=color, linestyle="--", label=f"{key} mpi")
+        ax.plot(
+            serial_sf["x-diffs"],
+            serial_sf[key],
+            color=color,
+            linestyle="-",
+            label=f"{key} serial",
+        )
+        ax.plot(
+            mpi_sf["x-diffs"],
+            mpi_sf[key],
+            color=color,
+            linestyle="--",
+            label=f"{key} mpi",
+        )
     ax.set_xlabel("Separation distance")
     ax.set_ylabel("Structure function")
     ax.set_title("1D Serial vs MPI")
     ax.legend(ncol=2, fontsize=8)
     fig.tight_layout()
-    fig.savefig(output_dir / "ex_1d_mpi_compare.png", dpi=150)
+    fig.savefig(output_dir / "ex_1d_serial_vs_mpi_synthetic_data.png", dpi=150)
     plt.close(fig)
 
     np.savez(
-        output_dir / "ex_1d_mpi_compare.npz",
+        output_dir / "ex_1d_serial_vs_mpi_synthetic_data.npz",
         x_diffs=serial_sf["x-diffs"],
         serial_SF_LL=serial_sf["SF_LL"],
         mpi_SF_LL=mpi_sf["SF_LL"],
@@ -97,6 +118,7 @@ def main():
         mpi_SF_LSS=mpi_sf["SF_LSS"],
     )
     print(f"Saved outputs to {output_dir}")
+    print(f"Largest diff = {max(diffs.values()):.3e}")
 
 
 if __name__ == "__main__":

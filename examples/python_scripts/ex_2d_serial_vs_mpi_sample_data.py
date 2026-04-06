@@ -1,8 +1,8 @@
 """
-Compare the main 2D example workflow against the MPI backend on the sample dataset.
+Compare the main 2D sample-data workflow in serial and MPI.
 
 Run with:
-    mpirun -launcher fork -n 4 python examples/python_scripts/ex_2d_example_mpi_compare.py
+    mpirun -launcher fork -n 4 python examples/python_scripts/ex_2d_serial_vs_mpi_sample_data.py
 """
 
 from __future__ import annotations
@@ -62,6 +62,9 @@ def main():
 
     x, y, u, v, q = load_data()
 
+    # The notebook launches this helper under mpirun because the notebook kernel
+    # itself stays single-process. The MPI result is written back to disk by rank
+    # 0 so the notebook can reload it as ordinary NumPy arrays.
     default_mpi = fluidsf.generate_structure_functions_2d(
         u,
         v,
@@ -81,8 +84,12 @@ def main():
         comm=comm,
     )
 
+    participating_ranks = comm.gather(rank, root=0)
+
     if rank != 0:
         return
+
+    print(f"MPI ranks participating: {participating_ranks}")
 
     default_serial = fluidsf.generate_structure_functions_2d(u, v, x, y)
     full_serial = fluidsf.generate_structure_functions_2d(
@@ -146,26 +153,74 @@ def main():
         label="ASF_V y mpi",
     )
 
-    axes[1].semilogx(full_serial["x-diffs"], full_serial["SF_LL_x"], color="C2", linestyle="-", label="LL x serial")
-    axes[1].semilogx(full_mpi["x-diffs"], full_mpi["SF_LL_x"], color="C2", linestyle="--", label="LL x mpi")
-    axes[1].semilogx(full_serial["y-diffs"], full_serial["SF_LLL_y"], color="C3", linestyle="-", label="LLL y serial")
-    axes[1].semilogx(full_mpi["y-diffs"], full_mpi["SF_LLL_y"], color="C3", linestyle="--", label="LLL y mpi")
+    axes[1].semilogx(
+        full_serial["x-diffs"],
+        full_serial["SF_LL_x"],
+        color="C2",
+        linestyle="-",
+        label="LL x serial",
+    )
+    axes[1].semilogx(
+        full_mpi["x-diffs"],
+        full_mpi["SF_LL_x"],
+        color="C2",
+        linestyle="--",
+        label="LL x mpi",
+    )
+    axes[1].semilogx(
+        full_serial["y-diffs"],
+        full_serial["SF_LLL_y"],
+        color="C3",
+        linestyle="-",
+        label="LLL y serial",
+    )
+    axes[1].semilogx(
+        full_mpi["y-diffs"],
+        full_mpi["SF_LLL_y"],
+        color="C3",
+        linestyle="--",
+        label="LLL y mpi",
+    )
 
-    axes[2].semilogx(full_serial["x-diffs"], full_serial["SF_LTT_x"], color="C4", linestyle="-", label="LTT x serial")
-    axes[2].semilogx(full_mpi["x-diffs"], full_mpi["SF_LTT_x"], color="C4", linestyle="--", label="LTT x mpi")
-    axes[2].semilogx(full_serial["y-diffs"], full_serial["SF_LSS_y"], color="C5", linestyle="-", label="LSS y serial")
-    axes[2].semilogx(full_mpi["y-diffs"], full_mpi["SF_LSS_y"], color="C5", linestyle="--", label="LSS y mpi")
+    axes[2].semilogx(
+        full_serial["x-diffs"],
+        full_serial["SF_LTT_x"],
+        color="C4",
+        linestyle="-",
+        label="LTT x serial",
+    )
+    axes[2].semilogx(
+        full_mpi["x-diffs"],
+        full_mpi["SF_LTT_x"],
+        color="C4",
+        linestyle="--",
+        label="LTT x mpi",
+    )
+    axes[2].semilogx(
+        full_serial["y-diffs"],
+        full_serial["SF_LSS_y"],
+        color="C5",
+        linestyle="-",
+        label="LSS y serial",
+    )
+    axes[2].semilogx(
+        full_mpi["y-diffs"],
+        full_mpi["SF_LSS_y"],
+        color="C5",
+        linestyle="--",
+        label="LSS y mpi",
+    )
 
     for ax in axes:
         ax.set_xlabel("Separation distance")
         ax.set_ylabel("Structure function")
         ax.legend(fontsize=7)
     fig.tight_layout()
-    fig.savefig(output_dir / "ex_2d_example_mpi_compare.png", dpi=150)
+    fig.savefig(output_dir / "ex_2d_serial_vs_mpi_sample_data.png", dpi=150)
     plt.close(fig)
 
     np.savez(
-        output_dir / "ex_2d_example_mpi_compare.npz",
+        output_dir / "ex_2d_serial_vs_mpi_sample_data.npz",
         x_diffs_default=default_serial["x-diffs"],
         y_diffs_default=default_serial["y-diffs"],
         x_diffs_full=full_serial["x-diffs"],

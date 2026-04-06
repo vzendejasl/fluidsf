@@ -81,6 +81,8 @@ def calculate_sf_maps_2d(  # noqa: D417, C901
                 function for separation vectors in the x-y plane.
 
     """
+    requested = set(sf_type)
+
     inputs = {
         "u": u,
         "v": v,
@@ -107,25 +109,25 @@ def calculate_sf_maps_2d(  # noqa: D417, C901
     inputs.update(shifted_inputs)
     SF_dict = {}
 
-    if any("ASF_V" in t for t in sf_type):
+    if "ASF_V" in requested:
         SF_dict["SF_advection_velocity_xy"] = np.nanmean(
             (inputs["adv_x_xy_shift"] - adv_x) * (inputs["u_xy_shift"] - u)
             + (inputs["adv_y_xy_shift"] - adv_y) * (inputs["v_xy_shift"] - v)
         )
 
-    if any("ASF_S" in t for t in sf_type):
+    if "ASF_S" in requested:
         SF_dict["SF_advection_scalar_xy"] = np.nanmean(
             (inputs["adv_scalar_xy_shift"] - adv_scalar)
             * (inputs["scalar_xy_shift"] - scalar)
         )
 
-    if any(t not in ["ASF_V", "ASF_S"] for t in sf_type):
+    if requested - {"ASF_V", "ASF_S"}:
         x_separation = shift_in_x * (x[1] - x[0])
         y_separation = shift_in_y * (y[1] - y[0])
         cosine_angle = x_separation / np.sqrt(x_separation**2 + y_separation**2)
         sine_angle = y_separation / np.sqrt(x_separation**2 + y_separation**2)
 
-        if any("LL" in t for t in sf_type):
+        if "LL" in requested:
             SF_dict["SF_LL_xy"] = np.nanmean(
                 (
                     (inputs["u_xy_shift"] - u) * cosine_angle
@@ -133,7 +135,7 @@ def calculate_sf_maps_2d(  # noqa: D417, C901
                 )
                 ** 2
             )
-        if any("TT" in t for t in sf_type):
+        if "TT" in requested:
             SF_dict["SF_TT_xy"] = np.nanmean(
                 (
                     (inputs["v_xy_shift"] - v) * cosine_angle
@@ -141,10 +143,10 @@ def calculate_sf_maps_2d(  # noqa: D417, C901
                 )
                 ** 2
             )
-        if any("SS" in t for t in sf_type):
+        if "SS" in requested:
             SF_dict["SF_SS_xy"] = np.nanmean((inputs["scalar_xy_shift"] - scalar) ** 2)
 
-        if any("LLL" in t for t in sf_type):
+        if "LLL" in requested:
             SF_dict["SF_LLL_xy"] = np.nanmean(
                 (
                     (inputs["u_xy_shift"] - u) * cosine_angle
@@ -152,7 +154,7 @@ def calculate_sf_maps_2d(  # noqa: D417, C901
                 )
                 ** 3
             )
-        if any("LTT" in t for t in sf_type):
+        if "LTT" in requested:
             SF_dict["SF_LTT_xy"] = np.nanmean(
                 (
                     (inputs["u_xy_shift"] - u) * cosine_angle
@@ -165,7 +167,7 @@ def calculate_sf_maps_2d(  # noqa: D417, C901
                 ** 2
             )
 
-        if any("LSS" in t for t in sf_type):
+        if "LSS" in requested:
             SF_dict["SF_LSS_xy"] = np.nanmean(
                 (
                     (inputs["u_xy_shift"] - u) * cosine_angle

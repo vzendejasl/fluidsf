@@ -293,6 +293,43 @@ def test_generate_structure_functions_3d_mpi_backend_matches_serial_mixed_period
         np.testing.assert_allclose(parallel[key], serial[key], atol=1e-14)
 
 
+def test_generate_structure_functions_3d_mpi_backend_matches_serial_asymmetric_public_layout():
+    x = np.arange(128, dtype=float)
+    y = np.arange(128, dtype=float)
+    z = np.arange(60, dtype=float)
+    xx, yy, zz = np.meshgrid(x, y, z, indexing="ij")
+    u = 2.0 * xx + 0.1 * yy
+    v = 3.0 * yy + 0.2 * zz
+    w = 5.0 * zz + 0.3 * xx
+
+    serial = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["ASF_V", "LL", "LLL", "LTT"],
+        boundary=["periodic-x", "periodic-y"],
+    )
+    parallel = generate_structure_functions_3d(
+        u,
+        v,
+        w,
+        x,
+        y,
+        z,
+        sf_type=["ASF_V", "LL", "LLL", "LTT"],
+        boundary=["periodic-x", "periodic-y"],
+        backend="mpi",
+        comm=_FakeComm(),
+    )
+
+    assert serial.keys() == parallel.keys()
+    for key in serial:
+        np.testing.assert_allclose(parallel[key], serial[key], atol=1e-14)
+
+
 def test_generate_structure_functions_3d_mpi_backend_exact_sf_type_selection():
     x = np.arange(6, dtype=float)
     y = np.arange(6, dtype=float)
